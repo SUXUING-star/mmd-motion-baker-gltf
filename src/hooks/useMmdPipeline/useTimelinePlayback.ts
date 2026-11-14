@@ -1,5 +1,5 @@
-// src/hooks/useMmdPipeline/useTimelinePlayback.ts
-import { RefObject, useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import type * as THREE from 'three';
 import { CameraAnimationData } from '../../solvers/cameraSolver';
 import { LandmarkData } from '../../types/types';
 import { ExpressionTrack } from '../../utils/expressionTrackEvaluator';
@@ -35,10 +35,8 @@ export interface TimelineThreeBridge {
 }
 
 export function useTimelinePlayback(
-  rawLandmarkDataRef: RefObject<LandmarkData | null>,
   threeBridge: TimelineThreeBridge,
-  expressionTracks: ExpressionTrack[],
-  cameraDataRef?: RefObject<CameraAnimationData | null>
+  expressionTracks: ExpressionTrack[]
 ) {
   const [maxFrames, setMaxFrames] = useState<number>(0);
   const [fps, setFps] = useState<number>(30);
@@ -46,6 +44,9 @@ export function useTimelinePlayback(
   const [startFrame, setStartFrame] = useState<number>(0);
   const [endFrame, setEndFrame] = useState<number>(0);
   const [isPlaying, setIsPlaying] = useState<boolean>(false);
+
+  const landmarkDataRef = useRef<LandmarkData | null>(null);
+  const cameraDataRef = useRef<CameraAnimationData | null>(null);
 
   const timerRef = useRef<number | null>(null);
   const fpsRef = useRef<number>(30);
@@ -72,47 +73,44 @@ export function useTimelinePlayback(
     return () => stopPlayback();
   }, [stopPlayback]);
 
-  const renderFrame = useCallback(
-    (frameIdx: number) => {
-      if (cameraDataRef?.current && threeBridgeRef.current.setCameraPose) {
-        const camFrame = cameraDataRef.current.frames[frameIdx];
-        if (camFrame) {
-          threeBridgeRef.current.setCameraPose(camFrame.position, camFrame.quaternion, camFrame.fov);
-        }
+  const renderFrame = useCallback((frameIdx: number) => {
+    if (cameraDataRef.current && threeBridgeRef.current.setCameraPose) {
+      const camFrame = cameraDataRef.current.frames[frameIdx];
+      if (camFrame) {
+        threeBridgeRef.current.setCameraPose(camFrame.position, camFrame.quaternion, camFrame.fov);
       }
+    }
 
-      const data = rawLandmarkDataRef.current;
-      if (!data) return;
+    const data = landmarkDataRef.current;
+    if (!data) return;
 
-      const result = evaluatePreviewFrame({
-        data,
-        frameIdx,
-        expressionTracks: expressionTracksRef.current,
-      });
-      if (!result) return;
+    const result = evaluatePreviewFrame({
+      data,
+      frameIdx,
+      expressionTracks: expressionTracksRef.current,
+    });
+    if (!result) return;
 
-      threeBridgeRef.current.setMmdTime(
-          result.time,
-          result.landmarks,
-          result.blendTarget,
-          result.expressionsOverride
-        );
-    },
-    [rawLandmarkDataRef, cameraDataRef]
-  );
+    threeBridgeRef.current.setMmdTime(
+      result.time,
+      result.landmarks,
+      result.blendTarget,
+      result.expressionsOverride
+    );
+  }, []);
 
   useEffect(() => {
     expressionTracksRef.current = expressionTracks;
-    if (!isPlayingRef.current && (rawLandmarkDataRef.current || cameraDataRef?.current)) {
+    if (!isPlayingRef.current && (landmarkDataRef.current || cameraDataRef.current)) {
       renderFrame(currentFrameRef.current);
     }
-  }, [expressionTracks, rawLandmarkDataRef, cameraDataRef, renderFrame]);
+  }, [expressionTracks, renderFrame]);
 
   const seekToFrame = useCallback(
     (frameIdx: number) => {
       const totalLen =
-        rawLandmarkDataRef.current?.frames.length ||
-        cameraDataRef?.current?.frames.length ||
+        landmarkDataRef.current?.frames.length ||
+        cameraDataRef.current?.frames.length ||
         0;
       if (totalLen === 0) return;
 
@@ -121,12 +119,12 @@ export function useTimelinePlayback(
       setCurrentFrame(safeIdx);
       renderFrame(safeIdx);
     },
-    [rawLandmarkDataRef, cameraDataRef, renderFrame]
+    [renderFrame]
   );
 
   const startPlayback = useCallback(
     (initialFrame?: number) => {
-      const hasData = !!rawLandmarkDataRef.current || !!cameraDataRef?.current;
+      const hasData = !!landmarkDataRef.current || !!cameraDataRef.current;
       if (!hasData || endFrameRef.current <= startFrameRef.current) return;
 
       stopPlayback();
@@ -152,7 +150,7 @@ export function useTimelinePlayback(
         renderFrame(next);
       }, intervalMs);
     },
-    [rawLandmarkDataRef, cameraDataRef, renderFrame, stopPlayback]
+    [renderFrame, stopPlayback]
   );
 
   const togglePlay = useCallback(() => {
@@ -165,6 +163,9 @@ export function useTimelinePlayback(
 
   const initAndPlay = useCallback(
     (landmarkData: LandmarkData) => {
+      landmarkDataRef.current = landmarkData;
+      cameraDataRef.current = null;
+
       const total = landmarkData.totalFrames;
       const defaultEnd = Math.max(0, total - 1);
 
@@ -184,6 +185,9 @@ export function useTimelinePlayback(
 
   const updateTimelineData = useCallback(
     (landmarkData: LandmarkData) => {
+      landmarkDataRef.current = landmarkData;
+      cameraDataRef.current = null;
+
       const total = landmarkData.totalFrames;
       const defaultEnd = Math.max(0, total - 1);
 
@@ -207,6 +211,9 @@ export function useTimelinePlayback(
 
   const initAndPlayCamera = useCallback(
     (camData: CameraAnimationData) => {
+      landmarkDataRef.current = null;
+      cameraDataRef.current = camData;
+
       const total = camData.totalFrames;
       const defaultEnd = Math.max(0, total - 1);
 
@@ -225,16 +232,16 @@ export function useTimelinePlayback(
   );
 
   const autoSnapLoopEnd = useCallback(() => {
-    if (!rawLandmarkDataRef.current) return;
+    if (!landmarkDataRef.current) return;
     const { bestFrameIndex } = findBestLoopEndFrame(
-      rawLandmarkDataRef.current,
+      landmarkDataRef.current,
       startFrameRef.current,
       30
     );
     endFrameRef.current = bestFrameIndex;
     setEndFrame(bestFrameIndex);
     seekToFrame(bestFrameIndex);
-  }, [rawLandmarkDataRef, seekToFrame]);
+  }, [seekToFrame]);
 
   const timeline: TimelineController = useMemo(
     () => ({
@@ -279,6 +286,8 @@ export function useTimelinePlayback(
 
   const resetTimeline = useCallback(() => {
     stopPlayback();
+    landmarkDataRef.current = null;
+    cameraDataRef.current = null;
     fpsRef.current = 30;
     currentFrameRef.current = 0;
     startFrameRef.current = 0;
@@ -294,7 +303,6 @@ export function useTimelinePlayback(
     timeline,
     startFrame,
     endFrame,
-    stopPlayback,
     resetTimeline,
     initAndPlay,
     updateTimelineData,

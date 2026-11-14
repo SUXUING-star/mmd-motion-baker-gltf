@@ -1,13 +1,10 @@
 import { useCallback, useMemo, useState } from 'react';
 
-export function useMmdFiles(
-  defaultPmxPath: string,
-  defaultVmdPath: string,
-  onFilesChanged?: () => void
-) {
+export function useMmdFiles(defaultPmxPath: string, defaultVmdPath: string) {
   const [customPmxFile, setCustomPmxFile] = useState<File | null>(null);
   const [customExtraFiles, setCustomExtraFiles] = useState<File[]>([]);
   const [vmdFile, setVmdFile] = useState<File | null>(null);
+  const [changeVersion, setChangeVersion] = useState<number>(0);
 
   const activePmxTarget = useMemo(
     () => customPmxFile || defaultPmxPath,
@@ -18,28 +15,22 @@ export function useMmdFiles(
     [vmdFile, defaultVmdPath]
   );
 
-  const selectPmx = useCallback(
-    (file: File | null, extraFiles: File[] = []) => {
-      setCustomPmxFile(file);
-      setCustomExtraFiles(extraFiles);
-      onFilesChanged?.();
-    },
-    [onFilesChanged]
-  );
+  const selectPmx = useCallback((file: File | null, extraFiles: File[] = []) => {
+    setCustomPmxFile(file);
+    setCustomExtraFiles(extraFiles);
+    setChangeVersion((v) => v + 1);
+  }, []);
 
-  const selectVmd = useCallback(
-    (file: File) => {
-      setVmdFile(file);
-      onFilesChanged?.();
-    },
-    [onFilesChanged]
-  );
+  const selectVmd = useCallback((file: File) => {
+    setVmdFile(file);
+    setChangeVersion((v) => v + 1);
+  }, []);
 
   const resetPmx = useCallback(() => {
     setCustomPmxFile(null);
     setCustomExtraFiles([]);
-    onFilesChanged?.();
-  }, [onFilesChanged]);
+    setChangeVersion((v) => v + 1);
+  }, []);
 
   const resetAllToDefault = useCallback(() => {
     setCustomPmxFile(null);
@@ -55,10 +46,11 @@ export function useMmdFiles(
 
   return {
     customPmxFile,
-    customExtraFiles,
     vmdFile,
     activePmxTarget,
     activeVmdTarget,
+    customExtraFiles,
+    changeVersion,
     selectPmx,
     selectVmd,
     resetPmx,

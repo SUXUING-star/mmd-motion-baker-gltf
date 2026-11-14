@@ -102,17 +102,18 @@ export function useThreeScene(containerRef: React.RefObject<HTMLDivElement | nul
     };
   }, [containerRef]);
 
-  const setViewMode = useCallback((mode: ViewMode) => {
-    viewModeRef.current = mode;
-    setViewModeState(mode);
+  const setViewMode = useCallback((mode: ViewMode | 'mmd') => {
+    const normalizedMode: ViewMode = mode === 'mmd' ? 'orbit' : mode;
+    viewModeRef.current = normalizedMode;
+    setViewModeState(normalizedMode);
 
     if (controlsRef.current) {
-      controlsRef.current.enabled = mode === 'orbit';
+      controlsRef.current.enabled = normalizedMode === 'orbit';
     }
     if (cameraHelperRef.current) {
-      cameraHelperRef.current.visible = mode === 'orbit';
+      cameraHelperRef.current.visible = normalizedMode === 'orbit';
     }
-    if (mode === 'orbit' && cameraRef.current && controlsRef.current) {
+    if (normalizedMode === 'orbit' && cameraRef.current && controlsRef.current) {
       cameraRef.current.fov = 45;
       cameraRef.current.updateProjectionMatrix();
       cameraRef.current.position.copy(DEFAULT_CAMERA_POS);
