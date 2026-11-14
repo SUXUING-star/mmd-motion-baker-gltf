@@ -82,13 +82,19 @@ export const BONE_CANDIDATE_MAP: Record<StandardBoneKey, string[]> = {
   [StandardBone.LeftUpperLeg]: ['左足', 'UpperLegL', 'Leg_L', 'Thigh_L', 'leftUpperLeg', 'leg.L'],
   [StandardBone.LeftLowerLeg]: ['左ひざ', 'LowerLegL', 'Knee_L', 'LowerLeg_L', 'leftLowerLeg', 'knee.L'],
   [StandardBone.LeftFoot]: ['左足首', 'FootL', 'Ankle_L', 'Foot_L', 'leftFoot', 'ankle.L'],
-  [StandardBone.LeftToes]: ['左つま先', 'ToesL', 'Toe_L', 'leftToes', 'toe.L'],
+  [StandardBone.LeftToes]: [
+      '左つま先', '左足先EX', '左足先', '左つま先先', 'つま先L', 'つま先_L', 'つま先.L',
+      'ToesL', 'Toe_L', 'ToeBase_L', 'leftToes', 'LeftToeBase', 'toe.L'
+    ],
+
 
   [StandardBone.RightUpperLeg]: ['右足', 'UpperLegR', 'Leg_R', 'Thigh_R', 'rightUpperLeg', 'leg.R'],
   [StandardBone.RightLowerLeg]: ['右ひざ', 'LowerLegR', 'Knee_R', 'LowerLeg_R', 'rightLowerLeg', 'knee.R'],
   [StandardBone.RightFoot]: ['右足首', 'FootR', 'Ankle_R', 'Foot_R', 'rightFoot', 'ankle.R'],
-  [StandardBone.RightToes]: ['右つま先', 'ToesR', 'Toe_R', 'rightToes', 'toe.R'],
-
+  [StandardBone.RightToes]: [
+    '右つま先', '右足先EX', '右足先', '右つま先先', 'つま先R', 'つま先_R', 'つま先.R',
+    'ToesR', 'Toe_R', 'ToeBase_R', 'rightToes', 'RightToeBase', 'toe.R'
+  ],
   // 左手 5 指
   [StandardBone.LeftThumb0]: ['左親指０', 'Thumb0L', 'Thumb_0_L', 'Thumb0_L', 'leftThumb0'],
   [StandardBone.LeftThumb1]: ['左親指１', 'Thumb1L', 'Thumb_1_L', 'Thumb1_L', 'leftThumb1'],

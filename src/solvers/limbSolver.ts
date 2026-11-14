@@ -87,27 +87,31 @@ function computeFootBasis(
   pKnee: THREE.Vector3,
   pAnkle: THREE.Vector3,
   pToes: THREE.Vector3,
-  fallbackSide: THREE.Vector3
+  legSide: THREE.Vector3
 ): THREE.Quaternion | null {
   const dFoot = new THREE.Vector3().subVectors(pToes, pAnkle);
   if (dFoot.lengthSq() < 1e-6) return null;
   dFoot.normalize();
 
-  const shinUp = new THREE.Vector3().subVectors(pKnee, pAnkle);
-  if (shinUp.lengthSq() < 1e-6) {
-    shinUp.set(0, 1, 0);
-  } else {
-    shinUp.normalize();
-  }
-
-  let footSide = new THREE.Vector3().crossVectors(shinUp, dFoot);
-  if (footSide.lengthSq() < 1e-5) {
-    footSide = fallbackSide.clone().sub(dFoot.clone().multiplyScalar(fallbackSide.dot(dFoot)));
+  // 以 legSide 在垂直于 dFoot 平面上的投影作为脚踝侧向约束轴，避免 dFoot 与 shinUp 共线时翻转
+  let footSide = legSide.clone().sub(dFoot.clone().multiplyScalar(legSide.dot(dFoot)));
+  if (footSide.lengthSq() < 1e-4) {
+    const shinUp = new THREE.Vector3().subVectors(pKnee, pAnkle);
+    if (shinUp.lengthSq() < 1e-6) {
+      shinUp.set(0, 1, 0);
+    } else {
+      shinUp.normalize();
+    }
+    footSide = new THREE.Vector3().crossVectors(shinUp, dFoot);
+    if (footSide.dot(legSide) < 0) {
+      footSide.negate();
+    }
   }
   if (footSide.lengthSq() < 1e-5) return null;
   footSide.normalize();
 
   const footUp = new THREE.Vector3().crossVectors(dFoot, footSide).normalize();
+  footSide = new THREE.Vector3().crossVectors(footUp, dFoot).normalize();
   return makeOrthoBasis(footSide, footUp, dFoot);
 }
 
@@ -132,38 +136,14 @@ function solveLegAndFoot(
   if (dLower.lengthSq() < 1e-6) dLower.set(0, -1, 0);
   else dLower.normalize();
 
-  let footWorldQ: THREE.Quaternion | null = null;
-  let footSideRef = hipSideOrtho.clone();
-
-  if (hasBone(lm, toesKey)) {
-    const pToes = getV(lm, toesKey);
-    const rawFootQ = computeFootBasis(pKnee, pAnkle, pToes, hipSideOrtho);
-    if (rawFootQ) {
-      if (restLm && hasBone(restLm, toesKey) && hasBone(restLm, ankleKey) && hasBone(restLm, kneeKey)) {
-        const rKnee = getV(restLm, kneeKey);
-        const rAnkle = getV(restLm, ankleKey);
-        const rToes = getV(restLm, toesKey);
-        const restFootQ = computeFootBasis(rKnee, rAnkle, rToes, new THREE.Vector3(1, 0, 0));
-        if (restFootQ) {
-          footWorldQ = rawFootQ.clone().multiply(inv(restFootQ)).normalize();
-        } else {
-          footWorldQ = rawFootQ;
-        }
-      } else {
-        footWorldQ = rawFootQ;
-      }
-      footSideRef = new THREE.Vector3(1, 0, 0).applyQuaternion(footWorldQ).normalize();
-    }
-  }
-
   const bendCross = new THREE.Vector3().crossVectors(dUpper, dLower);
   const bendLen = bendCross.length();
   const bendWeight = clamp((bendLen - 0.03) / 0.12, 0, 1);
 
-  let legSide = footSideRef.clone();
+  let legSide = hipSideOrtho.clone();
   if (bendLen > 1e-4) {
     const bendSide = bendCross.clone().divideScalar(bendLen);
-    if (bendSide.dot(footSideRef) >= -0.2) {
+    if (bendSide.dot(hipSideOrtho) >= -0.2) {
       legSide.lerp(bendSide, bendWeight).normalize();
     }
   }
@@ -187,6 +167,47 @@ function solveLegAndFoot(
   else lowerX.normalize();
   const lowerZ = new THREE.Vector3().crossVectors(lowerX, lowerY).normalize();
   const lowerWorldQ = makeOrthoBasis(lowerX, lowerY, lowerZ);
+
+  let footWorldQ: THREE.Quaternion | null = null;
+  if (hasBone(lm, toesKey)) {
+    const pToes = getV(lm, toesKey);
+    const rawFootQ = computeFootBasis(pKnee, pAnkle, pToes, legSide);
+    if (rawFootQ) {
+      if (restLm && hasBone(restLm, toesKey) && hasBone(restLm, ankleKey) && hasBone(restLm, kneeKey)) {
+        const rKnee = getV(restLm, kneeKey);
+        const rAnkle = getV(restLm, ankleKey);
+        const rToes = getV(restLm, toesKey);
+        const restFootQ = computeFootBasis(rKnee, rAnkle, rToes, new THREE.Vector3(1, 0, 0));
+        if (restFootQ) {
+          footWorldQ = rawFootQ.clone().multiply(inv(restFootQ)).normalize();
+        } else {
+          footWorldQ = rawFootQ;
+        }
+      } else {
+        footWorldQ = rawFootQ;
+      }
+    }
+  }
+
+  let footLocal = footWorldQ ? mul(inv(lowerWorldQ), footWorldQ) : new THREE.Quaternion(0, 0, 0, 1);
+
+  // 修复 VMD IK 导致的反人体力学过度背屈（脚面被强行压平贴近小腿前侧）
+  // 仅对负向背屈（pitch < -18°）做平滑软限位至 -28°；正向跖屈（蹬伸/绷脚背）完全不限制
+  const localFwd = new THREE.Vector3(0, 0, 1).applyQuaternion(footLocal);
+  const pitch = Math.atan2(-localFwd.y, localFwd.z);
+  const dorsiStart = -0.31; // -18°
+  const dorsiMax = -0.49;   // -28°
+  if (pitch < dorsiStart) {
+    const excess = dorsiStart - pitch;
+    const range = dorsiStart - dorsiMax;
+    const clampedPitch = dorsiStart - range * Math.tanh(excess / range);
+    const corrQ = new THREE.Quaternion().setFromAxisAngle(
+      new THREE.Vector3(1, 0, 0),
+      clampedPitch - pitch
+    );
+    footLocal = corrQ.multiply(footLocal).normalize();
+    footWorldQ = lowerWorldQ.clone().multiply(footLocal).normalize();
+  }
 
   return {
     upperWorldQ,
