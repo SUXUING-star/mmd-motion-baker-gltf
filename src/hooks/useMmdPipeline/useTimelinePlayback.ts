@@ -92,11 +92,11 @@ export function useTimelinePlayback(
       if (!result) return;
 
       threeBridgeRef.current.setMmdTime(
-        result.time,
-        result.landmarks,
-        undefined,
-        result.expressionsOverride
-      );
+          result.time,
+          result.landmarks,
+          result.blendTarget,
+          result.expressionsOverride
+        );
     },
     [rawLandmarkDataRef, cameraDataRef]
   );

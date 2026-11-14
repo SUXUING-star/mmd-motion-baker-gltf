@@ -44,7 +44,6 @@ export default function App() {
   return (
     <div className="mmd-page">
       <div className="mmd-shell">
-        {/* 顶部标题与语言切换 */}
         <div className="mmd-header">
           <h2 className="mmd-header-title">{t.title}</h2>
           <div className="mmd-lang-switch">
@@ -65,16 +64,13 @@ export default function App() {
           </div>
         </div>
 
-        {/* 响应式双/三栏工作区 */}
         <div className="mmd-workspace">
-          {/* 左栏：模型与动作/镜头 DropZone */}
           <div className="mmd-col-left">
             <div className="mmd-slot-dropzone">
               <DropZoneSection t={t} pipeline={pipeline} />
             </div>
           </div>
 
-          {/* 中栏：3D 视口与 PR 剪辑/表情轨 */}
           <div className="mmd-col-center">
             <div className="mmd-slot-canvas">
               <ThreeCanvas
@@ -87,20 +83,10 @@ export default function App() {
             </div>
 
             <div className="mmd-slot-clip">
-              <ClipSection
-                t={t}
-                timeline={pipeline.timeline}
-                exprState={exprState}
-                availableMorphs={pipeline.availableMorphs}
-                vmdExpressionTracks={pipeline.vmdExpressionTracks}
-                getFrameVmdExpressions={pipeline.getFrameVmdExpressions}
-                isCameraMode={pipeline.bakeTargetType === 'camera'}
-                disabled={pipeline.processing}
-              />
+              <ClipSection t={t} pipeline={pipeline} exprState={exprState} />
             </div>
           </div>
 
-          {/* 右栏：元数据配置与动作/镜头导出 */}
           <div className="mmd-col-right">
             <div className="mmd-slot-meta">
               <MetadataSection t={t} meta={meta} disabled={pipeline.processing} />
@@ -112,7 +98,6 @@ export default function App() {
           </div>
         </div>
 
-        {/* 底部 GitHub 链接 */}
         <footer className="mmd-footer">
           <a
             href="https://github.com/SUXUING-star/mmd-motion-baker-gltf"

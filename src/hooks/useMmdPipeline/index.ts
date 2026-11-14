@@ -1,11 +1,17 @@
 // src/hooks/useMmdPipeline/index.ts
-import { useCallback, useMemo, useRef, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { I18N, Lang } from '../../i18n';
 import { CameraAnimationData } from '../../solvers/cameraSolver';
 import { LandmarkData, ModelMorphInfo } from '../../types/types';
 import { exportCameraGLB, exportCameraVRMA } from '../../utils/cameraExporter';
 import { ExpressionTrack } from '../../utils/expressionTrackEvaluator';
 import { VrmaMetaOptions } from '../../utils/motionExporter';
+import {
+    applyLoopSegmentToLandmarkData,
+    findLoopCandidates,
+    LoopCandidate,
+    LoopRegionConfig,
+} from '../../utils/motionTrimmer';
 import { VmdExpressionTrackSummary } from '../../utils/vmdExpressionAnalyzer';
 import { useMmdBaker } from './useMmdBaker';
 import { useMmdFiles } from './useMmdFiles';
@@ -19,6 +25,18 @@ export type StatusType = 'ready' | 'analyzing' | 'ready_to_export' | 'exporting'
 export type BakeTargetType = 'motion' | 'camera';
 
 export type { TimelineController };
+
+export interface LoopController {
+  candidates: LoopCandidate[];
+  region: LoopRegionConfig | null;
+  isBaked: boolean;
+  bridgeFrames: number;
+  findCandidates: () => void;
+  selectCandidate: (c: LoopCandidate) => void;
+  updateRegion: (region: LoopRegionConfig | null) => void;
+  applyToTimeline: () => void;
+  restoreRaw: () => void;
+}
 
 export interface MmdPipeline {
   bakeTargetType: BakeTargetType;
@@ -37,6 +55,7 @@ export interface MmdPipeline {
   selectVmd: (file: File) => void;
   resetPmx: () => void;
   timeline: TimelineController;
+  loop: LoopController;
   startBake: () => Promise<void>;
   loadDefaultDemo: () => Promise<void>;
   downloadVrma: (metaOptions?: VrmaMetaOptions) => Promise<void>;
@@ -61,6 +80,10 @@ export function useMmdPipeline(
   const [statusType, setStatusType] = useState<StatusType>('ready');
   const [errorMessage, setErrorMessage] = useState<string>('');
 
+  const [loopCandidates, setLoopCandidates] = useState<LoopCandidate[]>([]);
+  const [loopRegion, setLoopRegion] = useState<LoopRegionConfig | null>(null);
+  const [isLoopBaked, setIsLoopBaked] = useState<boolean>(false);
+
   const activeLandmarkDataRef = useRef<LandmarkData | null>(null);
   const cameraDataRef = useRef<CameraAnimationData | null>(null);
   const [cameraData, setCameraDataState] = useState<CameraAnimationData | null>(null);
@@ -76,14 +99,131 @@ export function useMmdPipeline(
     cameraDataRef
   );
 
+  // 未插入时间轴前，拖动起点/终点滑块实时同步 loopRegion 边界
+  useEffect(() => {
+    if (!isLoopBaked && loopRegion) {
+      if (
+        loopRegion.startFrame !== playback.startFrame ||
+        loopRegion.endFrame !== playback.endFrame
+      ) {
+        setLoopRegion((prev) =>
+          prev
+            ? {
+                ...prev,
+                startFrame: playback.startFrame,
+                endFrame: playback.endFrame,
+              }
+            : null
+        );
+      }
+    }
+  }, [isLoopBaked, loopRegion, playback.startFrame, playback.endFrame]);
+
   const exporter = useMotionExporter({
     rawLandmarkDataRef: activeLandmarkDataRef,
     expressionTracks,
+    loopRegion: isLoopBaked ? null : loopRegion,
     startFrame: playback.startFrame,
     endFrame: playback.endFrame,
     getBaseFilename: files.getBaseFilename,
     t,
   });
+
+  const findCandidates = useCallback(() => {
+    const src = baker.rawLandmarkDataRef.current;
+    if (!src) return;
+    setLoopCandidates(findLoopCandidates(src));
+  }, [baker.rawLandmarkDataRef]);
+
+  const selectCandidate = useCallback(
+    (c: LoopCandidate) => {
+      if (baker.rawLandmarkDataRef.current && isLoopBaked) {
+        activeLandmarkDataRef.current = baker.rawLandmarkDataRef.current;
+        playback.updateTimelineData(baker.rawLandmarkDataRef.current);
+        setIsLoopBaked(false);
+      }
+
+      setLoopRegion({
+        startFrame: c.startFrame,
+        endFrame: c.endFrame,
+        blendDuration: 0.5,
+      });
+      playback.timeline.setStart(c.startFrame);
+      playback.timeline.setEnd(c.endFrame);
+    },
+    [baker.rawLandmarkDataRef, isLoopBaked, playback]
+  );
+
+  const updateRegion = useCallback(
+    (region: LoopRegionConfig | null) => {
+      if (region === null && isLoopBaked && baker.rawLandmarkDataRef.current) {
+        activeLandmarkDataRef.current = baker.rawLandmarkDataRef.current;
+        playback.updateTimelineData(baker.rawLandmarkDataRef.current);
+        setIsLoopBaked(false);
+      }
+      setLoopRegion(region);
+    },
+    [isLoopBaked, baker.rawLandmarkDataRef, playback]
+  );
+
+  const applyToTimeline = useCallback(() => {
+    const raw = baker.rawLandmarkDataRef.current;
+    if (!raw || !loopRegion) return;
+
+    const stitched = applyLoopSegmentToLandmarkData(
+      raw,
+      loopRegion.startFrame,
+      loopRegion.endFrame,
+      loopRegion.blendDuration
+    );
+    activeLandmarkDataRef.current = stitched;
+    setIsLoopBaked(true);
+    playback.updateTimelineData(stitched);
+  }, [baker.rawLandmarkDataRef, loopRegion, playback]);
+
+  const restoreRaw = useCallback(() => {
+    const raw = baker.rawLandmarkDataRef.current;
+    if (!raw) return;
+
+    activeLandmarkDataRef.current = raw;
+    setIsLoopBaked(false);
+    playback.updateTimelineData(raw);
+    if (loopRegion) {
+      playback.timeline.setStart(loopRegion.startFrame);
+      playback.timeline.setEnd(loopRegion.endFrame);
+    }
+  }, [baker.rawLandmarkDataRef, loopRegion, playback]);
+
+  const bridgeFrames = isLoopBaked
+    ? activeLandmarkDataRef.current?.loopBridgeFrames || 0
+    : loopRegion
+    ? Math.max(4, Math.round(loopRegion.blendDuration * (playback.timeline.fps || 30)))
+    : 0;
+
+  const loop: LoopController = useMemo(
+    () => ({
+      candidates: loopCandidates,
+      region: loopRegion,
+      isBaked: isLoopBaked,
+      bridgeFrames,
+      findCandidates,
+      selectCandidate,
+      updateRegion,
+      applyToTimeline,
+      restoreRaw,
+    }),
+    [
+      loopCandidates,
+      loopRegion,
+      isLoopBaked,
+      bridgeFrames,
+      findCandidates,
+      selectCandidate,
+      updateRegion,
+      applyToTimeline,
+      restoreRaw,
+    ]
+  );
 
   const clearAllBakedState = useCallback(
     (targetMode: BakeTargetType) => {
@@ -92,6 +232,9 @@ export function useMmdPipeline(
       activeLandmarkDataRef.current = null;
       cameraDataRef.current = null;
       setCameraDataState(null);
+      setLoopCandidates([]);
+      setLoopRegion(null);
+      setIsLoopBaked(false);
       threeBridge.clearCurrentMesh();
 
       if (targetMode === 'motion') {
@@ -121,6 +264,9 @@ export function useMmdPipeline(
         playback.resetTimeline();
         cameraDataRef.current = null;
         setCameraDataState(null);
+        setLoopCandidates([]);
+        setLoopRegion(null);
+        setIsLoopBaked(false);
         setStatusType('analyzing');
 
         const { landmarkData } = await baker.bake(pmxTarget, vmdTarget, extraFiles);
@@ -145,6 +291,9 @@ export function useMmdPipeline(
         activeLandmarkDataRef.current = null;
         cameraDataRef.current = null;
         setCameraDataState(null);
+        setLoopCandidates([]);
+        setLoopRegion(null);
+        setIsLoopBaked(false);
         setStatusType('analyzing');
         threeBridge.setViewMode?.('camera');
 
@@ -287,6 +436,7 @@ export function useMmdPipeline(
     selectVmd: files.selectVmd,
     resetPmx: files.resetPmx,
     timeline: playback.timeline,
+    loop,
     startBake,
     loadDefaultDemo,
     downloadVrma,

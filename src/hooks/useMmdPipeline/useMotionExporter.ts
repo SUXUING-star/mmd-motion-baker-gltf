@@ -7,7 +7,11 @@ import {
     mergeExpressionTracksIntoLandmarkData,
 } from '../../utils/expressionTrackEvaluator';
 import { exportFull52HumanoidGLB, exportFull52VRMA, VrmaMetaOptions } from '../../utils/motionExporter';
-import { trimLandmarkData } from '../../utils/motionTrimmer';
+import {
+    applyLoopSegmentToLandmarkData,
+    LoopRegionConfig,
+    trimLandmarkData,
+} from '../../utils/motionTrimmer';
 
 function triggerBrowserDownload(blob: Blob, filename: string) {
   const url = URL.createObjectURL(blob);
@@ -23,6 +27,7 @@ function triggerBrowserDownload(blob: Blob, filename: string) {
 interface MotionExporterDeps {
   rawLandmarkDataRef: RefObject<LandmarkData | null>;
   expressionTracks: ExpressionTrack[];
+  loopRegion: LoopRegionConfig | null;
   startFrame: number;
   endFrame: number;
   getBaseFilename: () => string;
@@ -32,6 +37,7 @@ interface MotionExporterDeps {
 export function useMotionExporter({
   rawLandmarkDataRef,
   expressionTracks,
+  loopRegion,
   startFrame,
   endFrame,
   getBaseFilename,
@@ -48,7 +54,17 @@ export function useMotionExporter({
           rawLandmarkDataRef.current,
           expressionTracks
         );
-        const trimmed = trimLandmarkData(withExpressions, startFrame, endFrame);
+
+        // 如果开启了待处理循环轨，后处理缝合插帧；否则基础裁切
+        const trimmed = loopRegion
+          ? applyLoopSegmentToLandmarkData(
+              withExpressions,
+              loopRegion.startFrame,
+              loopRegion.endFrame,
+              loopRegion.blendDuration
+            )
+          : trimLandmarkData(withExpressions, startFrame, endFrame);
+
         const blob = await buildBlob(trimmed);
         triggerBrowserDownload(blob, `${getBaseFilename()}_[${startFrame}-${endFrame}].${format}`);
       } catch (err) {
@@ -60,7 +76,7 @@ export function useMotionExporter({
         setExportingType(null);
       }
     },
-    [rawLandmarkDataRef, expressionTracks, startFrame, endFrame, getBaseFilename, t]
+    [rawLandmarkDataRef, expressionTracks, loopRegion, startFrame, endFrame, getBaseFilename, t]
   );
 
   const downloadVrma = useCallback(

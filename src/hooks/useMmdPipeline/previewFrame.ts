@@ -14,6 +14,7 @@ export interface PreviewFrameParams {
 export interface PreviewFrameResult {
   time: number;
   landmarks: Record<string, [number, number, number]>;
+  blendTarget?: { startTime: number; weight: number };
   expressionsOverride?: Record<string, number>;
 }
 
@@ -35,8 +36,9 @@ export function evaluatePreviewFrame({
   }
 
   return {
-    time: targetFrame.time,
+    time: targetFrame.previewTime ?? targetFrame.time,
     landmarks: targetFrame.landmarks,
+    blendTarget: targetFrame.previewBlendTarget,
     expressionsOverride,
   };
 }

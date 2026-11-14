@@ -51,8 +51,11 @@ export interface ModelMorphInfo {
 export interface LandmarkFrame {
   time: number;
   landmarks: Record<string, [number, number, number]>;
-  /** 本帧表情权重 (0~1)，键为 VRM 1.0 预设名 (aa/blink/happy...) 或自定义 Morph 名 */
   expressions?: Record<string, number>;
+  /** 用于 3D 视口预览时精确映射原始 VMD 动画时间 */
+  previewTime?: number;
+  /** 用于 3D 视口预览过渡帧时的 MMD 姿态混合目标 */
+  previewBlendTarget?: { startTime: number; weight: number };
 }
 
 export interface LandmarkData {
@@ -60,8 +63,8 @@ export interface LandmarkData {
   totalFrames: number;
   duration: number;
   frames: LandmarkFrame[];
-  /** 模型静止 T-Pose / Rest Pose 下的骨骼世界坐标，用于扣除初始偏角 */
   restLandmarks?: Record<string, [number, number, number]>;
-  /** 当前 PMX 模型自身携带的全部表情 Morph 信息 */
   availableMorphs?: ModelMorphInfo[];
+  /** 尾部插入的循环过渡帧数量（>0 时 mathSolver 将在四元数空间执行 C1 无缝缝合） */
+  loopBridgeFrames?: number;
 }
