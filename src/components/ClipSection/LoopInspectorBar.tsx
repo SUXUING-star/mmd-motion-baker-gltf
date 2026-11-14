@@ -17,10 +17,11 @@ export const LoopInspectorBar: React.FC<LoopInspectorBarProps> = ({
   disabled = false,
 }) => {
   const fps = timeline.fps || 30;
-  const bodyFrames = loop.isBaked
-    ? Math.max(0, timeline.maxFrames - loop.bridgeFrames)
+  // Overlap 模式下严格维持 1.000 完整周期长度 (total = end - start + 1，拆分为主体 + 同相位交叠过渡)
+  const totalOutFrames = loop.isBaked
+    ? timeline.maxFrames
     : timeline.endFrame - timeline.startFrame + 1;
-  const totalOutFrames = bodyFrames + loop.bridgeFrames;
+  const bodyFrames = Math.max(0, totalOutFrames - loop.bridgeFrames);
 
   return (
     <div style={{ marginTop: 12, padding: 10, background: '#ffffff', borderRadius: 6, border: '1px dashed #cbd5e1' }}>
@@ -113,27 +114,44 @@ export const LoopInspectorBar: React.FC<LoopInspectorBarProps> = ({
             </span>
 
             {!loop.isBaked && (
-              <div style={{ display: 'flex', alignItems: 'center', gap: 6, fontSize: 11 }}>
-                <label>{t.blendDurationLabel}:</label>
-                <input
-                  type="range"
-                  min={0.15}
-                  max={2.0}
-                  step={0.05}
-                  value={loop.region.blendDuration}
-                  disabled={disabled}
-                  onChange={(e) =>
-                    loop.updateRegion({
-                      ...loop.region!,
-                      blendDuration: parseFloat(e.target.value),
-                    })
-                  }
-                  style={{ width: 90 }}
-                />
-                <span style={{ fontFamily: 'monospace', fontWeight: 600, color: '#6b21a8' }}>
-                  {t.blendFramesInfo(loop.region.blendDuration.toFixed(2), loop.bridgeFrames)}
-                </span>
-              </div>
+              <>
+                <div style={{ display: 'flex', alignItems: 'center', gap: 6, fontSize: 11 }}>
+                  <label>{t.blendDurationLabel}:</label>
+                  <input
+                    type="range"
+                    min={0.1}
+                    max={1.5}
+                    step={0.05}
+                    value={loop.region.blendDuration}
+                    disabled={disabled}
+                    onChange={(e) =>
+                      loop.updateRegion({
+                        ...loop.region!,
+                        blendDuration: parseFloat(e.target.value),
+                      })
+                    }
+                    style={{ width: 90 }}
+                  />
+                  <span style={{ fontFamily: 'monospace', fontWeight: 600, color: '#6b21a8' }}>
+                    {t.blendFramesInfo(loop.region.blendDuration.toFixed(2), loop.bridgeFrames)}
+                  </span>
+                </div>
+
+                <label style={{ display: 'flex', alignItems: 'center', gap: 4, fontSize: 11, color: '#334155', cursor: disabled ? 'not-allowed' : 'pointer' }}>
+                  <input
+                    type="checkbox"
+                    checked={loop.region.inPlace}
+                    disabled={disabled}
+                    onChange={(e) =>
+                      loop.updateRegion({
+                        ...loop.region!,
+                        inPlace: e.target.checked,
+                      })
+                    }
+                  />
+                  {t.inPlaceLoopLabel}
+                </label>
+              </>
             )}
 
             <div style={{ display: 'flex', gap: 6, marginLeft: 'auto' }}>
@@ -181,7 +199,7 @@ export const LoopInspectorBar: React.FC<LoopInspectorBarProps> = ({
               bodyFrames,
               loop.bridgeFrames,
               totalOutFrames,
-              ((totalOutFrames - 1) / fps).toFixed(2)
+              ((Math.max(1, totalOutFrames) - 1) / fps).toFixed(2)
             )}
           </div>
         </div>

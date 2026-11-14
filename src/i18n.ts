@@ -82,7 +82,7 @@ const zh = {
   loopBakedBadge: '已插入过渡帧到时间轴',
   loopStatsSummary: (body: number, bridge: number, total: number, sec: string) =>
     `循环预览: 主体 ${body} 帧 + 过渡 ${bridge} 帧 = 共 ${total} 帧 (${sec} 秒)`,
-
+  inPlaceLoopLabel: '原地循环 (消除前进位移漂移)',
   // 手调表情
   exprSectionTitle: '表情轨编辑器 (VRMA Expressions)',
   exprSectionDesc: '在时间轴手动打点编辑表情权重',
@@ -219,7 +219,7 @@ const en: I18nTexts = {
    loopBakedBadge: 'Transition Frames Inserted',
    loopStatsSummary: (body: number, bridge: number, total: number, sec: string) =>
      `Loop Output: ${body} body + ${bridge} transition = ${total} frames (${sec}s)`,
-
+  inPlaceLoopLabel: 'In-Place Loop (Remove Root XZ Drift)',
   // Expression Track Editor
   exprSectionTitle: 'Expression Track Editor',
   exprSectionDesc: 'Keyframe facial expression weights manually',
@@ -354,7 +354,7 @@ const ja: I18nTexts = {
   loopBakedBadge: '補間フレーム挿入済',
   loopStatsSummary: (body: number, bridge: number, total: number, sec: string) =>
     `ループ構成: 本体 ${body}F + 補間 ${bridge}F = 計 ${total}F (${sec}秒)`,
-
+  inPlaceLoopLabel: 'その場ループ (移動ドリフト除去)',
   // 表情トラックエディタ
   exprSectionTitle: '表情トラックエディタ',
   exprSectionDesc: '手動で表情キーフレームを編集',

@@ -13,15 +13,13 @@ export interface LoopRegionConfig {
   startFrame: number;
   endFrame: number;
   blendDuration: number;
+  inPlace: boolean;
 }
 
 function getHipsPos(lm: Record<string, [number, number, number]>): [number, number, number] {
   return lm['Hips'] || lm['hips'] || lm['下半身'] || lm['Root'] || lm['センター'] || [0, 0, 0];
 }
 
-/**
- * 扣除全局 Hips XZ 水平位移后，计算两帧的局部相对姿态差异（消除位移漂移带来的误判）
- */
 function calculateRelativePoseDistance(frameA: LandmarkFrame, frameB: LandmarkFrame): number {
   const hipsA = getHipsPos(frameA.landmarks);
   const hipsB = getHipsPos(frameB.landmarks);
@@ -45,40 +43,91 @@ function calculateRelativePoseDistance(frameA: LandmarkFrame, frameB: LandmarkFr
 }
 
 /**
- * 自动扫描全姿态数据，检索高相干度的可循环段候选列表（精确到 1 帧局部极小值）
+ * 计算姿态 + 显式速度向量差异（严防反方向摆腿与静止帧混入）
  */
+function calculateMotionWindowDistance(
+  frames: LandmarkFrame[],
+  idxA: number,
+  idxB: number
+): number {
+  const poseDist = calculateRelativePoseDistance(frames[idxA], frames[idxB]);
+  if (!Number.isFinite(poseDist)) return Infinity;
+
+  const prevA = frames[Math.max(0, idxA - 2)];
+  const nextA = frames[Math.min(frames.length - 1, idxA + 2)];
+  const prevB = frames[Math.max(0, idxB - 2)];
+  const nextB = frames[Math.min(frames.length - 1, idxB + 2)];
+
+  const hipsPA = getHipsPos(prevA.landmarks);
+  const hipsNA = getHipsPos(nextA.landmarks);
+  const hipsPB = getHipsPos(prevB.landmarks);
+  const hipsNB = getHipsPos(nextB.landmarks);
+
+  let velDiffSq = 0;
+  let velCount = 0;
+
+  for (const name in prevA.landmarks) {
+    if (nextA.landmarks[name] && prevB.landmarks[name] && nextB.landmarks[name]) {
+      const vAx = (nextA.landmarks[name][0] - hipsNA[0]) - (prevA.landmarks[name][0] - hipsPA[0]);
+      const vAy = nextA.landmarks[name][1] - prevA.landmarks[name][1];
+      const vAz = (nextA.landmarks[name][2] - hipsNA[2]) - (prevA.landmarks[name][2] - hipsPA[2]);
+
+      const vBx = (nextB.landmarks[name][0] - hipsNB[0]) - (prevB.landmarks[name][0] - hipsPB[0]);
+      const vBy = nextB.landmarks[name][1] - prevB.landmarks[name][1];
+      const vBz = (nextB.landmarks[name][2] - hipsNB[2]) - (prevB.landmarks[name][2] - hipsPB[2]);
+
+      const dvx = vAx - vBx;
+      const dvy = vAy - vBy;
+      const dvz = vAz - vBz;
+      velDiffSq += dvx * dvx + dvy * dvy + dvz * dvz;
+      velCount++;
+    }
+  }
+
+  const avgVelDiff = velCount > 0 ? velDiffSq / velCount : 0;
+  return poseDist * 0.55 + avgVelDiff * 1.5;
+}
+
+/**
+ * 检验片段区间内是否确实有有效动作（避免选中全程站着不动的段落）
+ */
+function hasActiveMotionInSegment(frames: LandmarkFrame[], start: number, end: number): boolean {
+  const mid = Math.floor((start + end) / 2);
+  const d1 = calculateRelativePoseDistance(frames[start], frames[mid]);
+  const d2 = calculateRelativePoseDistance(frames[start], frames[Math.floor((start + mid) / 2)]);
+  return Math.max(d1, d2) > 0.002;
+}
+
 export function findLoopCandidates(
   landmarkData: LandmarkData,
-  minGapFrames = 30,
+  minGapFrames = 24,
   maxCandidates = 4
 ): LoopCandidate[] {
   const frames = landmarkData.frames;
   const total = frames.length;
-  if (total <= minGapFrames + 5) return [];
+  if (total <= minGapFrames + 6) return [];
 
   const candidates: LoopCandidate[] = [];
   const fps = landmarkData.fps || 30;
   const coarseStep = Math.max(1, Math.floor(total / 80));
 
-  for (let i = 0; i < total - minGapFrames; i += coarseStep) {
-    const fStart = frames[i];
+  for (let i = 2; i < total - minGapFrames - 3; i += coarseStep) {
     let minDist = Infinity;
     let bestJ = -1;
 
-    for (let j = i + minGapFrames; j < total; j += coarseStep) {
-      const dist = calculateRelativePoseDistance(fStart, frames[j]);
+    for (let j = i + minGapFrames; j < total - 2; j += coarseStep) {
+      const dist = calculateMotionWindowDistance(frames, i, j);
       if (dist < minDist) {
         minDist = dist;
         bestJ = j;
       }
     }
 
-    // 在粗略极小值附近 ±coarseStep 范围内做 1 帧级精确搜索
     if (bestJ > 0) {
       const searchStart = Math.max(i + minGapFrames, bestJ - coarseStep);
-      const searchEnd = Math.min(total - 1, bestJ + coarseStep);
+      const searchEnd = Math.min(total - 3, bestJ + coarseStep);
       for (let j = searchStart; j <= searchEnd; j++) {
-        const dist = calculateRelativePoseDistance(fStart, frames[j]);
+        const dist = calculateMotionWindowDistance(frames, i, j);
         if (dist < minDist) {
           minDist = dist;
           bestJ = j;
@@ -86,8 +135,8 @@ export function findLoopCandidates(
       }
     }
 
-    if (bestJ > 0 && minDist < 0.25) {
-      const score = Math.max(0, Math.min(100, Math.round((1 - minDist / 0.25) * 100)));
+    if (bestJ > 0 && minDist < 0.25 && hasActiveMotionInSegment(frames, i, bestJ)) {
+      const score = Math.max(1, Math.min(99, Math.round(Math.exp(-minDist * 10) * 100)));
       const duration = Number(((bestJ - i) / fps).toFixed(2));
 
       candidates.push({
@@ -119,7 +168,7 @@ export function findLoopCandidates(
 export function findBestLoopEndFrame(
   landmarkData: LandmarkData,
   startFrameIndex = 0,
-  minGapFrames = 30
+  minGapFrames = 24
 ): { bestFrameIndex: number; bestTime: number; minDistance: number } {
   const frames = landmarkData.frames;
   const totalFrames = frames.length;
@@ -133,12 +182,11 @@ export function findBestLoopEndFrame(
     };
   }
 
-  const refFrame = frames[startFrameIndex];
   let minDistance = Infinity;
   let bestFrameIndex = totalFrames - 1;
 
   for (let i = startFrameIndex + minGapFrames; i < totalFrames; i++) {
-    const dist = calculateRelativePoseDistance(refFrame, frames[i]);
+    const dist = calculateMotionWindowDistance(frames, startFrameIndex, i);
     if (dist < minDistance) {
       minDistance = dist;
       bestFrameIndex = i;
@@ -152,152 +200,213 @@ export function findBestLoopEndFrame(
   };
 }
 
-function cubicHermiteInterpolate(
-  p0: [number, number, number],
-  v0: [number, number, number],
-  p1: [number, number, number],
-  v1: [number, number, number],
-  u: number,
-  T: number
-): [number, number, number] {
-  const u2 = u * u;
-  const u3 = u2 * u;
-
-  const h00 = 2 * u3 - 3 * u2 + 1;
-  const h10 = u3 - 2 * u2 + u;
-  const h01 = -2 * u3 + 3 * u2;
-  const h11 = u3 - u2;
-
-  return [
-    h00 * p0[0] + h10 * (T * v0[0]) + h01 * p1[0] + h11 * (T * v1[0]),
-    h00 * p0[1] + h10 * (T * v0[1]) + h01 * p1[1] + h11 * (T * v1[1]),
-    h00 * p0[2] + h10 * (T * v0[2]) + h01 * p1[2] + h11 * (T * v1[2]),
-  ];
+function shiftFrameXZ(
+  frame: LandmarkFrame,
+  dx: number,
+  dz: number
+): LandmarkFrame {
+  const lm: Record<string, [number, number, number]> = {};
+  for (const k in frame.landmarks) {
+    const p = frame.landmarks[k];
+    lm[k] = [p[0] + dx, p[1], p[2] + dz];
+  }
+  return {
+    ...frame,
+    landmarks: lm,
+    expressions: frame.expressions ? { ...frame.expressions } : undefined,
+  };
 }
 
 /**
- * 裁剪出 [startFrameIndex, endFrameIndex]，并真正向尾部物理插入过渡帧
+ * 同相位交叠融合（保持 1.000 完整周期长度，绝不切半拍破坏节奏）：
+ * - 若 E 后方有足够真实延续帧 (E + B < rawTotal)：
+ *   主体 = raw[S + B .. E]
+ *   过渡 = Blend(TrackA: raw[E + 1 .. E + B], TrackB: raw[S + 1 .. S + B])
+ *   其中 TrackA 与 TrackB 相位完全同步（均相对周期起点推进 1..B 帧），第 B 帧 100% 抵达 raw[S + B] === Frame[0]！
+ * - 若 E 贴近视频结尾没有后续帧：
+ *   保留 raw[S .. E]，启用 'warp' 模式在 mathSolver 内对首尾残差做加性分散校准。
  */
 export function applyLoopSegmentToLandmarkData(
   landmarkData: LandmarkData,
   startFrameIndex: number,
   endFrameIndex: number,
-  blendDuration: number
+  blendDuration: number,
+  inPlace: boolean = true
 ): LandmarkData {
-  const safeStart = Math.max(0, Math.min(startFrameIndex, landmarkData.frames.length - 1));
-  const safeEnd = Math.max(safeStart, Math.min(endFrameIndex, landmarkData.frames.length - 1));
+  const allFrames = landmarkData.frames;
+  const rawTotal = allFrames.length;
+  const safeStart = Math.max(0, Math.min(startFrameIndex, rawTotal - 1));
+  const safeEnd = Math.max(safeStart, Math.min(endFrameIndex, rawTotal - 1));
 
-  const baseFrames = landmarkData.frames.slice(safeStart, safeEnd + 1);
-  if (baseFrames.length < 4) return trimLandmarkData(landmarkData, safeStart, safeEnd);
+  const cycleSpan = safeEnd - safeStart;
+  if (cycleSpan < 6) return trimLandmarkData(landmarkData, safeStart, safeEnd);
 
   const fps = landmarkData.fps || 30;
-  const dt = 1 / fps;
-  const insertCount = Math.max(4, Math.round(blendDuration * fps));
-  const T = insertCount * dt;
+  // 融合帧数不超过半个周期
+  const maxAllowedBlend = Math.max(2, Math.floor(cycleSpan * 0.45));
+  const insertCount = Math.max(3, Math.min(maxAllowedBlend, Math.round(blendDuration * fps)));
 
-  const originalCount = baseFrames.length;
-  const fStart = baseFrames[0];
-  const fStartNext = baseFrames[1] || fStart;
-  const fEnd = baseFrames[originalCount - 1];
-  const fEndPrev = baseFrames[originalCount - 2] || fEnd;
+  const canOverlapForward = safeEnd + insertCount < rawTotal;
 
-  const startOrigTime = fStart.previewTime ?? fStart.time;
-  const endOrigTime = fEnd.previewTime ?? fEnd.time;
+  // =========================================================================
+  // 模式 1：同相位交叠继续动 (Phase-Aligned Overlap Crossfade)
+  // =========================================================================
+  if (canOverlapForward) {
+    const bodyStart = safeStart + insertCount;
+    const bodyFrames = allFrames.slice(bodyStart, safeEnd + 1);
 
-  const vEnd: Record<string, [number, number, number]> = {};
-  const vStart: Record<string, [number, number, number]> = {};
+    // Track A: 从 E 继续往后动 (E + 1 .. E + B)
+    const bridgeContinuation: LandmarkFrame[] = allFrames
+      .slice(safeEnd + 1, safeEnd + 1 + insertCount)
+      .map((f) => ({
+        ...f,
+        previewTime: f.previewTime ?? f.time,
+        landmarks: { ...f.landmarks },
+      }));
 
-  for (const k in fEnd.landmarks) {
-    const pEnd = fEnd.landmarks[k];
-    const pEndP = fEndPrev.landmarks[k] || pEnd;
-    vEnd[k] = [
-      ((pEnd[0] - pEndP[0]) / dt) * 0.5,
-      ((pEnd[1] - pEndP[1]) / dt) * 0.5,
-      ((pEnd[2] - pEndP[2]) / dt) * 0.5,
-    ];
+    // 计算周期前进位移，把 Track B 平移到与 Track A 相同的空间接续位置，避免过渡区倒着滑步
+    const hStart = getHipsPos(allFrames[safeStart].landmarks);
+    const hEnd = getHipsPos(allFrames[safeEnd].landmarks);
+    const cycleDriftX = hEnd[0] - hStart[0];
+    const cycleDriftZ = hEnd[2] - hStart[2];
 
-    const pStart = fStart.landmarks[k] || pEnd;
-    const pStartN = fStartNext.landmarks[k] || pStart;
-    vStart[k] = [
-      ((pStartN[0] - pStart[0]) / dt) * 0.5,
-      ((pStartN[1] - pStart[1]) / dt) * 0.5,
-      ((pStartN[2] - pStart[2]) / dt) * 0.5,
-    ];
+    // Track B: 同相位接回 (S + 1 .. S + B)，末帧 B 正好是 raw[S + B] === bodyFrames[0]
+    const bridgeLeadIn: LandmarkFrame[] = allFrames
+      .slice(safeStart + 1, safeStart + 1 + insertCount)
+      .map((f) =>
+        shiftFrameXZ(
+          {
+            ...f,
+            previewTime: f.previewTime ?? f.time,
+          },
+          cycleDriftX,
+          cycleDriftZ
+        )
+      );
+
+    const resultFrames: LandmarkFrame[] = bodyFrames.map((f) => ({
+      time: 0,
+      landmarks: { ...f.landmarks },
+      expressions: f.expressions ? { ...f.expressions } : undefined,
+      previewTime: f.previewTime ?? f.time,
+    }));
+
+    for (let k = 0; k < insertCount; k++) {
+      const u = (k + 1) / insertCount;
+      const w = u * u * u * (u * (u * 6 - 15) + 10);
+      const fA = bridgeContinuation[k];
+      const fB = bridgeLeadIn[k];
+
+      const lm: Record<string, [number, number, number]> = {};
+      for (const boneKey in fA.landmarks) {
+        const pA = fA.landmarks[boneKey];
+        const pB = fB.landmarks[boneKey] || pA;
+        lm[boneKey] = [
+          pA[0] * (1 - w) + pB[0] * w,
+          pA[1] * (1 - w) + pB[1] * w,
+          pA[2] * (1 - w) + pB[2] * w,
+        ];
+      }
+
+      let expressions: Record<string, number> | undefined;
+      if (fA.expressions || fB.expressions) {
+        expressions = {};
+        const keys = new Set([
+          ...Object.keys(fA.expressions || {}),
+          ...Object.keys(fB.expressions || {}),
+        ]);
+        keys.forEach((key) => {
+          const vA = fA.expressions?.[key] ?? 0;
+          const vB = fB.expressions?.[key] ?? 0;
+          expressions![key] = Number((vA * (1 - w) + vB * w).toFixed(4));
+        });
+      }
+
+      resultFrames.push({
+        time: 0,
+        landmarks: lm,
+        ...(expressions ? { expressions } : {}),
+        previewTime: fA.previewTime ?? fA.time,
+        previewBlendTarget: {
+          startTime: fB.previewTime ?? fB.time,
+          weight: w,
+        },
+      });
+    }
+
+    const totalFrames = resultFrames.length;
+    // 若开启原地循环，从全部帧（含过渡轨）统一扣除线性 XZ 前进趋势，保留 100% 骨盆摇摆与 Y 起伏
+    if (inPlace && totalFrames > 1) {
+      const firstH = getHipsPos(resultFrames[0].landmarks);
+      const lastH = getHipsPos(resultFrames[totalFrames - 1].landmarks);
+      const totalDriftX = lastH[0] - firstH[0];
+      const totalDriftZ = lastH[2] - firstH[2];
+
+      for (let i = 0; i < totalFrames; i++) {
+        const frac = i / (totalFrames - 1);
+        resultFrames[i] = shiftFrameXZ(
+          resultFrames[i],
+          -totalDriftX * frac,
+          -totalDriftZ * frac
+        );
+      }
+    }
+
+    for (let i = 0; i < totalFrames; i++) {
+      resultFrames[i].time = i / fps;
+    }
+
+    return {
+      ...landmarkData,
+      totalFrames,
+      duration: resultFrames[totalFrames - 1].time,
+      frames: resultFrames,
+      loopMode: 'overlap',
+      loopBridgeFrames: insertCount,
+      loopInPlace: inPlace,
+      bridgeContinuation,
+      bridgeLeadIn,
+    };
   }
 
-  // 1. 保留主体剪辑帧（记录原始预览时间）
-  const resultFrames: LandmarkFrame[] = baseFrames.map((f) => ({
-    time: 0,
+  // =========================================================================
+  // 模式 2：结尾无后续帧兜底 —— 残差分散校准 (Unity Loop Pose Warp)
+  // =========================================================================
+  const sliced = allFrames.slice(safeStart, safeEnd + 1);
+  const totalFrames = sliced.length;
+  const resultFrames: LandmarkFrame[] = sliced.map((f, idx) => ({
+    time: idx / fps,
     landmarks: { ...f.landmarks },
     expressions: f.expressions ? { ...f.expressions } : undefined,
     previewTime: f.previewTime ?? f.time,
   }));
 
-  // 2. 物理插入过渡帧（供预览与 mathSolver 四元数缝合使用）
-  for (let step = 1; step <= insertCount; step++) {
-    const u = step / insertCount;
-    const smoothW = u * u * u * (u * (u * 6 - 15) + 10); // Quintic smootherstep
-    const interpolatedLm: Record<string, [number, number, number]> = {};
+  if (inPlace && totalFrames > 1) {
+    const firstH = getHipsPos(resultFrames[0].landmarks);
+    const lastH = getHipsPos(resultFrames[totalFrames - 1].landmarks);
+    const totalDriftX = lastH[0] - firstH[0];
+    const totalDriftZ = lastH[2] - firstH[2];
 
-    if (step === insertCount) {
-      for (const k in fStart.landmarks) {
-        const p = fStart.landmarks[k];
-        interpolatedLm[k] = [p[0], p[1], p[2]];
-      }
-    } else {
-      for (const k in fEnd.landmarks) {
-        const pEnd = fEnd.landmarks[k];
-        const pStart = fStart.landmarks[k] || pEnd;
-        const ve = vEnd[k] || [0, 0, 0];
-        const vs = vStart[k] || [0, 0, 0];
-        const p = cubicHermiteInterpolate(pEnd, ve, pStart, vs, u, T);
-        interpolatedLm[k] = [
-          Number(p[0].toFixed(4)),
-          Number(p[1].toFixed(4)),
-          Number(p[2].toFixed(4)),
-        ];
-      }
+    for (let i = 0; i < totalFrames; i++) {
+      const frac = i / (totalFrames - 1);
+      resultFrames[i] = shiftFrameXZ(
+        resultFrames[i],
+        -totalDriftX * frac,
+        -totalDriftZ * frac
+      );
     }
-
-    let interpolatedExpr: Record<string, number> | undefined;
-    if (fEnd.expressions || fStart.expressions) {
-      interpolatedExpr = {};
-      const allKeys = new Set([
-        ...Object.keys(fEnd.expressions || {}),
-        ...Object.keys(fStart.expressions || {}),
-      ]);
-      allKeys.forEach((key) => {
-        const vE = fEnd.expressions?.[key] ?? 0;
-        const vS = fStart.expressions?.[key] ?? 0;
-        interpolatedExpr![key] = Number((vE + (vS - vE) * smoothW).toFixed(4));
-      });
-    }
-
-    resultFrames.push({
-      time: 0,
-      landmarks: interpolatedLm,
-      ...(interpolatedExpr ? { expressions: interpolatedExpr } : {}),
-      previewTime: endOrigTime,
-      previewBlendTarget: {
-        startTime: startOrigTime,
-        weight: smoothW,
-      },
-    });
   }
-
-  // 3. 使用精确浮点时间戳 i / fps（严禁 toFixed(3) 截断，否则 SkeletonUtils.retargetClip 会少采样尾帧！）
-  const totalFrames = resultFrames.length;
-  for (let i = 0; i < totalFrames; i++) {
-    resultFrames[i].time = i / fps;
-  }
-  const duration = totalFrames > 0 ? resultFrames[totalFrames - 1].time : 0;
 
   return {
     ...landmarkData,
     totalFrames,
-    duration,
+    duration: resultFrames[totalFrames - 1].time,
     frames: resultFrames,
+    loopMode: 'warp',
     loopBridgeFrames: insertCount,
+    loopInPlace: inPlace,
+    bridgeContinuation: undefined,
+    bridgeLeadIn: undefined,
   };
 }
 
@@ -326,5 +435,9 @@ export function trimLandmarkData(
     totalFrames,
     duration,
     frames: normalizedFrames,
+    loopMode: undefined,
+    loopBridgeFrames: 0,
+    bridgeContinuation: undefined,
+    bridgeLeadIn: undefined,
   };
 }

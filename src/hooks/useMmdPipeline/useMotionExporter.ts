@@ -28,6 +28,7 @@ interface MotionExporterDeps {
   rawLandmarkDataRef: RefObject<LandmarkData | null>;
   expressionTracks: ExpressionTrack[];
   loopRegion: LoopRegionConfig | null;
+  isLoopBaked: boolean;
   startFrame: number;
   endFrame: number;
   getBaseFilename: () => string;
@@ -38,6 +39,7 @@ export function useMotionExporter({
   rawLandmarkDataRef,
   expressionTracks,
   loopRegion,
+  isLoopBaked,
   startFrame,
   endFrame,
   getBaseFilename,
@@ -55,17 +57,26 @@ export function useMotionExporter({
           expressionTracks
         );
 
-        // 如果开启了待处理循环轨，后处理缝合插帧；否则基础裁切
-        const trimmed = loopRegion
-          ? applyLoopSegmentToLandmarkData(
-              withExpressions,
-              loopRegion.startFrame,
-              loopRegion.endFrame,
-              loopRegion.blendDuration
-            )
-          : trimLandmarkData(withExpressions, startFrame, endFrame);
+        let exportData: LandmarkData;
+        const totalLen = withExpressions.frames.length;
 
-        const blob = await buildBlob(trimmed);
+        if (isLoopBaked && startFrame === 0 && endFrame === totalLen - 1) {
+          // 时间轴已完成交叠拼接且未二次截断，直接保留 bridgeContinuation / bridgeLeadIn / loopMode 元数据送给 mathSolver
+          exportData = withExpressions;
+        } else if (!isLoopBaked && loopRegion) {
+          // 尚未点应用到时间轴时直接导出，按当前循环参数现场拼接
+          exportData = applyLoopSegmentToLandmarkData(
+            withExpressions,
+            loopRegion.startFrame,
+            loopRegion.endFrame,
+            loopRegion.blendDuration,
+            loopRegion.inPlace
+          );
+        } else {
+          exportData = trimLandmarkData(withExpressions, startFrame, endFrame);
+        }
+
+        const blob = await buildBlob(exportData);
         triggerBrowserDownload(blob, `${getBaseFilename()}_[${startFrame}-${endFrame}].${format}`);
       } catch (err) {
         const errMsg = t
@@ -76,7 +87,7 @@ export function useMotionExporter({
         setExportingType(null);
       }
     },
-    [rawLandmarkDataRef, expressionTracks, loopRegion, startFrame, endFrame, getBaseFilename, t]
+    [rawLandmarkDataRef, expressionTracks, loopRegion, isLoopBaked, startFrame, endFrame, getBaseFilename, t]
   );
 
   const downloadVrma = useCallback(

@@ -7,18 +7,18 @@ import { exportCameraGLB, exportCameraVRMA } from '../../utils/cameraExporter';
 import { ExpressionTrack } from '../../utils/expressionTrackEvaluator';
 import { VrmaMetaOptions } from '../../utils/motionExporter';
 import {
-    applyLoopSegmentToLandmarkData,
-    findLoopCandidates,
-    LoopCandidate,
-    LoopRegionConfig,
+  applyLoopSegmentToLandmarkData,
+  findLoopCandidates,
+  LoopCandidate,
+  LoopRegionConfig,
 } from '../../utils/motionTrimmer';
 import { VmdExpressionTrackSummary } from '../../utils/vmdExpressionAnalyzer';
 import { useMmdBaker } from './useMmdBaker';
 import { useMmdFiles } from './useMmdFiles';
 import { useMotionExporter } from './useMotionExporter';
 import {
-    TimelineController,
-    useTimelinePlayback,
+  TimelineController,
+  useTimelinePlayback,
 } from './useTimelinePlayback';
 
 export type StatusType = 'ready' | 'analyzing' | 'ready_to_export' | 'exporting' | 'error';
@@ -99,7 +99,7 @@ export function useMmdPipeline(
     cameraDataRef
   );
 
-  // 未插入时间轴前，拖动起点/终点滑块实时同步 loopRegion 边界
+  // 未应用到时间轴前，拖动起点/终点滑块实时同步 loopRegion 边界
   useEffect(() => {
     if (!isLoopBaked && loopRegion) {
       if (
@@ -122,7 +122,8 @@ export function useMmdPipeline(
   const exporter = useMotionExporter({
     rawLandmarkDataRef: activeLandmarkDataRef,
     expressionTracks,
-    loopRegion: isLoopBaked ? null : loopRegion,
+    loopRegion,
+    isLoopBaked,
     startFrame: playback.startFrame,
     endFrame: playback.endFrame,
     getBaseFilename: files.getBaseFilename,
@@ -146,7 +147,8 @@ export function useMmdPipeline(
       setLoopRegion({
         startFrame: c.startFrame,
         endFrame: c.endFrame,
-        blendDuration: 0.5,
+        blendDuration: 0.35,
+        inPlace: true,
       });
       playback.timeline.setStart(c.startFrame);
       playback.timeline.setEnd(c.endFrame);
@@ -174,7 +176,8 @@ export function useMmdPipeline(
       raw,
       loopRegion.startFrame,
       loopRegion.endFrame,
-      loopRegion.blendDuration
+      loopRegion.blendDuration,
+      loopRegion.inPlace
     );
     activeLandmarkDataRef.current = stitched;
     setIsLoopBaked(true);
@@ -194,10 +197,17 @@ export function useMmdPipeline(
     }
   }, [baker.rawLandmarkDataRef, loopRegion, playback]);
 
+  const fps = playback.timeline.fps || 30;
   const bridgeFrames = isLoopBaked
     ? activeLandmarkDataRef.current?.loopBridgeFrames || 0
-    : loopRegion
-    ? Math.max(4, Math.round(loopRegion.blendDuration * (playback.timeline.fps || 30)))
+    : loopRegion && loopRegion.endFrame - loopRegion.startFrame >= 6
+    ? Math.max(
+        3,
+        Math.min(
+          Math.max(2, Math.floor((loopRegion.endFrame - loopRegion.startFrame) * 0.45)),
+          Math.round(loopRegion.blendDuration * fps)
+        )
+      )
     : 0;
 
   const loop: LoopController = useMemo(

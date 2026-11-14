@@ -52,9 +52,7 @@ export interface LandmarkFrame {
   time: number;
   landmarks: Record<string, [number, number, number]>;
   expressions?: Record<string, number>;
-  /** 用于 3D 视口预览时精确映射原始 VMD 动画时间 */
   previewTime?: number;
-  /** 用于 3D 视口预览过渡帧时的 MMD 姿态混合目标 */
   previewBlendTarget?: { startTime: number; weight: number };
 }
 
@@ -65,6 +63,11 @@ export interface LandmarkData {
   frames: LandmarkFrame[];
   restLandmarks?: Record<string, [number, number, number]>;
   availableMorphs?: ModelMorphInfo[];
-  /** 尾部插入的循环过渡帧数量（>0 时 mathSolver 将在四元数空间执行 C1 无缝缝合） */
+  loopMode?: 'overlap' | 'warp';
   loopBridgeFrames?: number;
+  loopInPlace?: boolean;
+  /** 同相位续播轨 (Track A: E+1 .. E+B) */
+  bridgeContinuation?: LandmarkFrame[];
+  /** 同相位接回轨 (Track B: S+1 .. S+B) */
+  bridgeLeadIn?: LandmarkFrame[];
 }

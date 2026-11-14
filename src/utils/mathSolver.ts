@@ -6,26 +6,72 @@ import { solveLimbs } from '../solvers/limbSolver';
 import { ensureQuatContinuity, getV, hasBone } from '../solvers/mathUtils';
 import { solveSpine } from '../solvers/spineSolver';
 import { StandardBone } from '../types/boneMapping';
-import { HUMANOID_BONES, HumanoidBoneName, LandmarkData } from '../types/types';
+import { HUMANOID_BONES, HumanoidBoneName, LandmarkData, LandmarkFrame } from '../types/types';
 
-function isLandmarkLoopClosed(data: LandmarkData): boolean {
-  if (data.loopBridgeFrames && data.loopBridgeFrames > 0) return true;
-  const { frames } = data;
-  if (frames.length < 6) return false;
-  const first = frames[0].landmarks;
-  const last = frames[frames.length - 1].landmarks;
-  let sumSq = 0;
-  let count = 0;
-  for (const k in first) {
-    if (last[k]) {
-      const dx = first[k][0] - last[k][0];
-      const dy = first[k][1] - last[k][1];
-      const dz = first[k][2] - last[k][2];
-      sumSq += dx * dx + dy * dy + dz * dz;
-      count++;
-    }
+function solveSingleFramePose(
+  lm: Record<string, [number, number, number]>,
+  scaleFactor: number,
+  ankleBaseY: number,
+  restLm?: Record<string, [number, number, number]>
+): { hipsPos: THREE.Vector3; localMap: Record<HumanoidBoneName, THREE.Quaternion> } {
+  const hips = solveHips(lm, scaleFactor, ankleBaseY);
+  const spine = solveSpine(lm, hips.hipsWorldQ, hips.hipForward, restLm);
+  const limbs = solveLimbs(
+    lm,
+    spine.spineWorldQ,
+    hips.hipsWorldQ,
+    hips.hipSideOrtho,
+    spine.spineUp,
+    restLm
+  );
+  const leftFingers = solveFingers(lm, true);
+  const rightFingers = solveFingers(lm, false);
+
+  return {
+    hipsPos: hips.hipsPosition,
+    localMap: {
+      hips: hips.hipsWorldQ,
+      ...spine.localRotations,
+      ...limbs.localRotations,
+      ...leftFingers,
+      ...rightFingers,
+    } as Record<HumanoidBoneName, THREE.Quaternion>,
+  };
+}
+
+function solveSequenceContinuous(
+  seqFrames: LandmarkFrame[],
+  scaleFactor: number,
+  ankleBaseY: number,
+  restLm: Record<string, [number, number, number]> | undefined,
+  initPrevQuats?: Partial<Record<HumanoidBoneName, THREE.Quaternion>>
+) {
+  const hipsArr: THREE.Vector3[] = [];
+  const quatsArr: Record<HumanoidBoneName, THREE.Quaternion[]> = {} as any;
+  HUMANOID_BONES.forEach((k) => (quatsArr[k] = []));
+
+  const prevQuats: Partial<Record<HumanoidBoneName, THREE.Quaternion>> = {
+    ...(initPrevQuats || {}),
+  };
+
+  for (let i = 0; i < seqFrames.length; i++) {
+    const { hipsPos, localMap } = solveSingleFramePose(
+      seqFrames[i].landmarks,
+      scaleFactor,
+      ankleBaseY,
+      restLm
+    );
+    hipsArr.push(hipsPos);
+
+    HUMANOID_BONES.forEach((k) => {
+      const qRaw = localMap[k] || new THREE.Quaternion(0, 0, 0, 1);
+      const qCont = ensureQuatContinuity(qRaw, prevQuats[k]);
+      prevQuats[k] = qCont.clone();
+      quatsArr[k].push(qCont);
+    });
   }
-  return count > 0 && sumSq / count < 1e-4;
+
+  return { hipsArr, quatsArr, lastPrevQuats: prevQuats };
 }
 
 export function solveAllHumanoidQuaternions(data: LandmarkData) {
@@ -50,146 +96,181 @@ export function solveAllHumanoidQuaternions(data: LandmarkData) {
   const scaleFactor = 0.87 / mmdLegSpan;
 
   const frameCount = frames.length;
-  const bridgeCount =
-    data.loopBridgeFrames && data.loopBridgeFrames > 0 && data.loopBridgeFrames < frameCount - 2
-      ? data.loopBridgeFrames
-      : 0;
-  const bodyEndIdx = frameCount - 1 - bridgeCount;
+  const hasOverlapBridge =
+    data.loopMode === 'overlap' &&
+    !!data.loopBridgeFrames &&
+    data.loopBridgeFrames > 0 &&
+    data.bridgeContinuation?.length === data.loopBridgeFrames &&
+    data.bridgeLeadIn?.length === data.loopBridgeFrames &&
+    data.loopBridgeFrames < frameCount;
 
-  const times: number[] = [];
+  const isWarpMode =
+    data.loopMode === 'warp' &&
+    !!data.loopBridgeFrames &&
+    data.loopBridgeFrames > 0 &&
+    frameCount > 6;
+
+  const bridgeCount = hasOverlapBridge ? data.loopBridgeFrames! : 0;
+  const bodyCount = frameCount - bridgeCount;
+
+  const times: number[] = frames.map((f) => f.time);
   const hipsPositions: number[] = [];
   const quatTracksData: Record<HumanoidBoneName, number[]> = {} as any;
-
   HUMANOID_BONES.forEach((k) => (quatTracksData[k] = []));
-  const prevQuats: Partial<Record<HumanoidBoneName, THREE.Quaternion>> = {};
 
-  // 1. 仅对主体真实帧（0 .. bodyEndIdx）解算 IK/FK；若无桥接则解算全部帧
-  const solveLimit = bridgeCount > 0 ? bodyEndIdx + 1 : frameCount;
-  for (let f = 0; f < solveLimit; f++) {
-    const frame = frames[f];
-    const lm = frame.landmarks;
-    times.push(frame.time);
+  // 1. 解算主体帧（Overlap 模式下为 bodyCount 帧；Warp 或无循环下为全部帧）
+  const bodyRes = solveSequenceContinuous(
+    frames.slice(0, bodyCount),
+    scaleFactor,
+    ankleBaseY,
+    restLm
+  );
 
-    const hips = solveHips(lm, scaleFactor, ankleBaseY);
-    const spine = solveSpine(lm, hips.hipsWorldQ, hips.hipForward, restLm);
-    const limbs = solveLimbs(
-      lm,
-      spine.spineWorldQ,
-      hips.hipsWorldQ,
-      hips.hipSideOrtho,
-      spine.spineUp,
+  for (let i = 0; i < bodyCount; i++) {
+    const hp = bodyRes.hipsArr[i];
+    hipsPositions.push(hp.x, hp.y, hp.z);
+    HUMANOID_BONES.forEach((k) => {
+      const q = bodyRes.quatsArr[k][i];
+      quatTracksData[k].push(q.x, q.y, q.z, q.w);
+    });
+  }
+
+  // 2A. 同相位交叠融合模式：Track A (E+1..E+B) -> Track B (S+1..S+B)
+  if (hasOverlapBridge) {
+    const resA = solveSequenceContinuous(
+      data.bridgeContinuation!,
+      scaleFactor,
+      ankleBaseY,
+      restLm,
+      bodyRes.lastPrevQuats
+    );
+
+    const resB = solveSequenceContinuous(
+      data.bridgeLeadIn!,
+      scaleFactor,
+      ankleBaseY,
       restLm
     );
 
-    const leftFingers = solveFingers(lm, true);
-    const rightFingers = solveFingers(lm, false);
+    const prevMergedQuats: Partial<Record<HumanoidBoneName, THREE.Quaternion>> = {
+      ...bodyRes.lastPrevQuats,
+    };
+    const tmpQ = new THREE.Quaternion();
+    const tmpB = new THREE.Quaternion();
 
-    const localMap = {
-      hips: hips.hipsWorldQ,
-      ...spine.localRotations,
-      ...limbs.localRotations,
-      ...leftFingers,
-      ...rightFingers,
-    } as Record<HumanoidBoneName, THREE.Quaternion>;
+    for (let k = 0; k < bridgeCount; k++) {
+      const u = (k + 1) / bridgeCount;
+      const w = u * u * u * (u * (u * 6 - 15) + 10);
 
-    hipsPositions.push(hips.hipsPosition.x, hips.hipsPosition.y, hips.hipsPosition.z);
+      const hA = resA.hipsArr[k];
+      const hB = resB.hipsArr[k];
+      hipsPositions.push(
+        hA.x * (1 - w) + hB.x * w,
+        hA.y * (1 - w) + hB.y * w,
+        hA.z * (1 - w) + hB.z * w
+      );
 
-    HUMANOID_BONES.forEach((k) => {
-      const qRaw = localMap[k] || new THREE.Quaternion(0, 0, 0, 1);
-      const qContinuous = ensureQuatContinuity(qRaw, prevQuats[k]);
-      prevQuats[k] = qContinuous.clone();
+      HUMANOID_BONES.forEach((bone) => {
+        const qA = resA.quatsArr[bone][k];
+        const qB = resB.quatsArr[bone][k];
 
-      quatTracksData[k].push(qContinuous.x, qContinuous.y, qContinuous.z, qContinuous.w);
-    });
-  }
+        tmpB.copy(qB);
+        if (qA.dot(tmpB) < 0) {
+          tmpB.set(-tmpB.x, -tmpB.y, -tmpB.z, -tmpB.w);
+        }
 
-  // 2. 若存在循环过渡段，直接在 Humanoid 骨骼四元数空间 + Hips 位移空间执行 SLERP 缝合！
-  //    彻底绕过 3D 坐标插值喂给三角函数 IK 带来的膝盖/脚踝非线性突变！
-  if (bridgeCount > 0) {
-    const fps = data.fps || 30;
-    const dt = 1 / fps;
-    const T = bridgeCount * dt;
+        tmpQ.copy(qA).slerp(tmpB, w).normalize();
 
-    const h0 = new THREE.Vector3(hipsPositions[0], hipsPositions[1], hipsPositions[2]);
-    const h0Next = new THREE.Vector3(hipsPositions[3], hipsPositions[4], hipsPositions[5]);
-    const hEnd = new THREE.Vector3(
-      hipsPositions[bodyEndIdx * 3],
-      hipsPositions[bodyEndIdx * 3 + 1],
-      hipsPositions[bodyEndIdx * 3 + 2]
-    );
-    const hEndPrev = new THREE.Vector3(
-      hipsPositions[(bodyEndIdx - 1) * 3],
-      hipsPositions[(bodyEndIdx - 1) * 3 + 1],
-      hipsPositions[(bodyEndIdx - 1) * 3 + 2]
-    );
-
-    const vEnd = hEnd.clone().sub(hEndPrev).divideScalar(dt).multiplyScalar(0.5);
-    const vStart = h0Next.clone().sub(h0).divideScalar(dt).multiplyScalar(0.5);
-
-    const qStartMap: Record<string, THREE.Quaternion> = {};
-    const qEndMap: Record<string, THREE.Quaternion> = {};
-    const qTargetMap: Record<string, THREE.Quaternion> = {};
-
-    HUMANOID_BONES.forEach((k) => {
-      const arr = quatTracksData[k];
-      const q0 = new THREE.Quaternion(arr[0], arr[1], arr[2], arr[3]).normalize();
-      const qE = new THREE.Quaternion(
-        arr[bodyEndIdx * 4],
-        arr[bodyEndIdx * 4 + 1],
-        arr[bodyEndIdx * 4 + 2],
-        arr[bodyEndIdx * 4 + 3]
-      ).normalize();
-
-      // 取与主体尾帧同半球的最短弧等价四元数（4 分量取反代表同一旋转）
-      const qTarget = q0.clone();
-      if (qE.dot(q0) < 0) {
-        qTarget.set(-qTarget.x, -qTarget.y, -qTarget.z, -qTarget.w);
-      }
-
-      qStartMap[k] = q0;
-      qEndMap[k] = qE;
-      qTargetMap[k] = qTarget;
-    });
-
-    const tmpQuat = new THREE.Quaternion();
-
-    for (let step = 1; step <= bridgeCount; step++) {
-      const frameIdx = bodyEndIdx + step;
-      times.push(frames[frameIdx].time);
-
-      const u = step / bridgeCount;
-      // Quintic smootherstep 保证一阶导数与二阶导数在首尾均平滑衔接
-      const smoothW = u * u * u * (u * (u * 6 - 15) + 10);
-
-      if (step === bridgeCount) {
-        hipsPositions.push(h0.x, h0.y, h0.z);
-      } else {
-        const u2 = u * u;
-        const u3 = u2 * u;
-        const h00 = 2 * u3 - 3 * u2 + 1;
-        const h10 = u3 - 2 * u2 + u;
-        const h01 = -2 * u3 + 3 * u2;
-        const h11 = u3 - u2;
-
-        const hx = h00 * hEnd.x + h10 * (T * vEnd.x) + h01 * h0.x + h11 * (T * vStart.x);
-        const hy = h00 * hEnd.y + h10 * (T * vEnd.y) + h01 * h0.y + h11 * (T * vStart.y);
-        const hz = h00 * hEnd.z + h10 * (T * vEnd.z) + h01 * h0.z + h11 * (T * vStart.z);
-        hipsPositions.push(hx, hy, hz);
-      }
-
-      HUMANOID_BONES.forEach((k) => {
-        tmpQuat.copy(qEndMap[k]).slerp(qTargetMap[k], smoothW).normalize();
-        quatTracksData[k].push(tmpQuat.x, tmpQuat.y, tmpQuat.z, tmpQuat.w);
+        const qFinal = ensureQuatContinuity(tmpQ, prevMergedQuats[bone]);
+        prevMergedQuats[bone] = qFinal.clone();
+        quatTracksData[bone].push(qFinal.x, qFinal.y, qFinal.z, qFinal.w);
       });
+    }
+
+    // 原地循环：从拼接后的 hipsPositions 扣除线性 XZ 前进斜坡，保留 100% 摇摆和 Y 起伏
+    if (data.loopInPlace && frameCount > 1) {
+      const firstX = hipsPositions[0];
+      const firstZ = hipsPositions[2];
+      const lastIdx = (frameCount - 1) * 3;
+      const driftX = hipsPositions[lastIdx] - firstX;
+      const driftZ = hipsPositions[lastIdx + 2] - firstZ;
+
+      for (let i = 0; i < frameCount; i++) {
+        const frac = i / (frameCount - 1);
+        hipsPositions[i * 3] -= driftX * frac;
+        hipsPositions[i * 3 + 2] -= driftZ * frac;
+      }
     }
   }
 
-  // 3. 跨首尾闭环环形平滑滤波（消除尾帧接回首帧的速度折角）
-  const isClosedLoop = isLandmarkLoopClosed(data);
-  const period = isClosedLoop ? frameCount - 1 : frameCount;
+  // 2B. Additive Pose Warp 兜底模式（结尾无延续帧时，双向加性残差分散，100% 保持原动作摆幅）
+  if (isWarpMode) {
+    const half = Math.max(2, Math.min(Math.floor((frameCount - 1) / 2), Math.floor(data.loopBridgeFrames! / 2)));
+    const qId = new THREE.Quaternion(0, 0, 0, 1);
+    const qS = new THREE.Quaternion();
+    const qE = new THREE.Quaternion();
+    const qDelta = new THREE.Quaternion();
+    const qCur = new THREE.Quaternion();
+    const qCorr = new THREE.Quaternion();
 
+    HUMANOID_BONES.forEach((k) => {
+      const arr = quatTracksData[k];
+      qS.set(arr[0], arr[1], arr[2], arr[3]).normalize();
+      const tail = (frameCount - 1) * 4;
+      qE.set(arr[tail], arr[tail + 1], arr[tail + 2], arr[tail + 3]).normalize();
+      if (qS.dot(qE) < 0) qE.set(-qE.x, -qE.y, -qE.z, -qE.w);
+
+      // qMid 为首尾折中点：尾端向前靠向 qMid，首端向后靠向 qMid，均保持原动作全部振荡幅度
+      qDelta.copy(qE).invert().premultiply(qS); // qDelta * qE = qS
+      const qHalfDelta = new THREE.Quaternion().copy(qId).slerp(qDelta, 0.5);
+      const qHalfInv = qHalfDelta.clone().invert();
+
+      // 首部 [0 .. half-1] 从 qHalfInv(满) 平滑衰减至 0
+      for (let i = 0; i < half; i++) {
+        const u = 1 - i / half;
+        const w = u * u * (3 - 2 * u);
+        qCur.set(arr[i * 4], arr[i * 4 + 1], arr[i * 4 + 2], arr[i * 4 + 3]);
+        qCorr.copy(qId).slerp(qHalfInv, w);
+        qCur.premultiply(qCorr).normalize();
+        arr[i * 4] = qCur.x;
+        arr[i * 4 + 1] = qCur.y;
+        arr[i * 4 + 2] = qCur.z;
+        arr[i * 4 + 3] = qCur.w;
+      }
+
+      // 尾部 [frameCount - half .. frameCount - 1] 从 0 平滑爬升至 qHalfDelta(满)
+      for (let i = 0; i < half; i++) {
+        const idx = frameCount - half + i;
+        const u = (i + 1) / half;
+        const w = u * u * (3 - 2 * u);
+        qCur.set(arr[idx * 4], arr[idx * 4 + 1], arr[idx * 4 + 2], arr[idx * 4 + 3]);
+        qCorr.copy(qId).slerp(qHalfDelta, w);
+        qCur.premultiply(qCorr).normalize();
+        arr[idx * 4] = qCur.x;
+        arr[idx * 4 + 1] = qCur.y;
+        arr[idx * 4 + 2] = qCur.z;
+        arr[idx * 4 + 3] = qCur.w;
+      }
+    });
+
+    // Hips Y 首尾差平滑校准
+    const h0y = hipsPositions[1];
+    const hNy = hipsPositions[(frameCount - 1) * 3 + 1];
+    const dy = h0y - hNy;
+    for (let i = 0; i < half; i++) {
+      const wStart = 1 - i / half;
+      hipsPositions[i * 3 + 1] -= 0.5 * dy * wStart * wStart * (3 - 2 * wStart);
+      const tailIdx = frameCount - half + i;
+      const wEnd = (i + 1) / half;
+      hipsPositions[tailIdx * 3 + 1] += 0.5 * dy * wEnd * wEnd * (3 - 2 * wEnd);
+    }
+  }
+
+  // 3. 闭环环形轻微平滑与 Three.js LoopRepeat 首尾闭合契约
+  const isLoop = hasOverlapBridge || isWarpMode;
+  const period = isLoop ? frameCount - 1 : frameCount;
   const resolveIndex = (i: number, offset: number): number => {
-    if (isClosedLoop) {
+    if (isLoop) {
       return ((i + offset) % period + period) % period;
     }
     return Math.max(0, Math.min(frameCount - 1, i + offset));
@@ -199,14 +280,12 @@ export function solveAllHumanoidQuaternions(data: LandmarkData) {
     for (let axis = 0; axis < 3; axis++) {
       const smoothed = new Float32Array(frameCount);
       for (let i = 0; i < period; i++) {
-        const p0 = hipsPositions[resolveIndex(i, -2) * 3 + axis];
-        const p1 = hipsPositions[resolveIndex(i, -1) * 3 + axis];
-        const p2 = hipsPositions[i * 3 + axis];
-        const p3 = hipsPositions[resolveIndex(i, 1) * 3 + axis];
-        const p4 = hipsPositions[resolveIndex(i, 2) * 3 + axis];
-        smoothed[i] = (p0 + p1 * 2 + p2 * 4 + p3 * 2 + p4) / 10;
+        const p0 = hipsPositions[resolveIndex(i, -1) * 3 + axis];
+        const p1 = hipsPositions[i * 3 + axis];
+        const p2 = hipsPositions[resolveIndex(i, 1) * 3 + axis];
+        smoothed[i] = (p0 + p1 * 2 + p2) / 4;
       }
-      if (isClosedLoop) {
+      if (isLoop) {
         smoothed[frameCount - 1] = smoothed[0];
       }
       for (let i = 0; i < frameCount; i++) {
@@ -214,7 +293,7 @@ export function solveAllHumanoidQuaternions(data: LandmarkData) {
       }
     }
 
-    const weights = [1, 3, 6, 3, 1];
+    const weights = [1, 2, 1];
     HUMANOID_BONES.forEach((k) => {
       const arr = quatTracksData[k];
       const out = new Float32Array(frameCount * 4);
@@ -230,9 +309,9 @@ export function solveAllHumanoidQuaternions(data: LandmarkData) {
         let sz = 0;
         let sw = 0;
 
-        for (let offset = -2; offset <= 2; offset++) {
+        for (let offset = -1; offset <= 1; offset++) {
           const idx = resolveIndex(i, offset);
-          const w = weights[offset + 2];
+          const w = weights[offset + 1];
           let qx = arr[idx * 4];
           let qy = arr[idx * 4 + 1];
           let qz = arr[idx * 4 + 2];
@@ -277,7 +356,7 @@ export function solveAllHumanoidQuaternions(data: LandmarkData) {
         }
       }
 
-      if (isClosedLoop) {
+      if (isLoop) {
         const lastPrevIdx = (period - 1) * 4;
         let q0x = out[0];
         let q0y = out[1];
