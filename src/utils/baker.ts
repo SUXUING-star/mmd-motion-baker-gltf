@@ -64,7 +64,7 @@ function resolveAnimatedMorphs(mesh: THREE.SkinnedMesh, animation: THREE.Animati
 }
 
 /**
- * 自动检测并裁剪首尾静态 A-Pose / T-Pose 空白帧，重置时间轴
+ * 强力检测并自动裁剪首尾静态 A-Pose / T-Pose 空白帧，重置时间轴
  */
 function cleanRestPoseFrames(
   frames: LandmarkFrame[],
@@ -72,14 +72,20 @@ function cleanRestPoseFrames(
 ): LandmarkFrame[] {
   if (frames.length < 10) return frames;
 
-  // 1. 扫描开头是否存在与 Rest Pose 几乎一致的静态 A-Pose 帧
-  let startIndex = 0;
-  while (startIndex < frames.length - 5) {
-    const frameLm = frames[startIndex].landmarks;
+  // 重点监控四肢与躯干关键骨骼，准确判断是否处于未激活的静态 A-Pose 状态
+  const keyBones = [
+    'leftUpperArm', 'rightUpperArm', 'leftLowerArm', 'rightLowerArm',
+    'leftHand', 'rightHand', 'leftUpperLeg', 'rightUpperLeg',
+    'spine', 'chest', 'hips',
+    '左腕', '右腕', '左ひじ', '右ひじ', '左手首', '右手首', '左足', '右足'
+  ];
+
+  const getPoseDiffFromRest = (frame: LandmarkFrame): number => {
+    const frameLm = frame.landmarks;
     let sumSq = 0;
     let count = 0;
 
-    for (const k in restLm) {
+    for (const k of keyBones) {
       if (frameLm[k] && restLm[k]) {
         const dx = frameLm[k][0] - restLm[k][0];
         const dy = frameLm[k][1] - restLm[k][1];
@@ -89,41 +95,45 @@ function cleanRestPoseFrames(
       }
     }
 
-    const avgDist = count > 0 ? Math.sqrt(sumSq / count) : 0;
-    // 如果与 A-Pose 姿态平均偏差小于 0.008（静止 A-Pose），则自动裁剪
-    if (avgDist < 0.008) {
+    // 若重点骨骼未能匹配，降级计算全量骨骼
+    if (count === 0) {
+      for (const k in restLm) {
+        if (frameLm[k] && restLm[k]) {
+          const dx = frameLm[k][0] - restLm[k][0];
+          const dy = frameLm[k][1] - restLm[k][1];
+          const dz = frameLm[k][2] - restLm[k][2];
+          sumSq += dx * dx + dy * dy + dz * dz;
+          count++;
+        }
+      }
+    }
+
+    return count > 0 ? Math.sqrt(sumSq / count) : Infinity;
+  };
+
+  // 1. 扫描开头：姿态偏差小于 0.035m 即认定为静止 A-Pose / T-Pose，直接切掉
+  let startIndex = 0;
+  while (startIndex < frames.length - 5) {
+    const diff = getPoseDiffFromRest(frames[startIndex]);
+    if (diff < 0.035) {
       startIndex++;
     } else {
       break;
     }
   }
 
-  // 2. 扫描结尾是否存在静态 A-Pose 帧
+  // 2. 扫描结尾：剔除末端残留的静止 A-Pose 帧
   let endIndex = frames.length - 1;
   while (endIndex > startIndex + 5) {
-    const frameLm = frames[endIndex].landmarks;
-    let sumSq = 0;
-    let count = 0;
-
-    for (const k in restLm) {
-      if (frameLm[k] && restLm[k]) {
-        const dx = frameLm[k][0] - restLm[k][0];
-        const dy = frameLm[k][1] - restLm[k][1];
-        const dz = frameLm[k][2] - restLm[k][2];
-        sumSq += dx * dx + dy * dy + dz * dz;
-        count++;
-      }
-    }
-
-    const avgDist = count > 0 ? Math.sqrt(sumSq / count) : 0;
-    if (avgDist < 0.008) {
+    const diff = getPoseDiffFromRest(frames[endIndex]);
+    if (diff < 0.035) {
       endIndex--;
     } else {
       break;
     }
   }
 
-  // 如果成功裁剪掉了空 A-Pose 帧，重置时间轴起点
+  // 重新归一化时间轴起点
   if (startIndex > 0 || endIndex < frames.length - 1) {
     const sliced = frames.slice(startIndex, endIndex + 1);
     const baseTime = sliced[0].time;
@@ -357,7 +367,8 @@ export async function bakePure3DLandmarks(
     const rawBakedFrames: LandmarkFrame[] = [];
 
     for (let f = 0; f < totalFrames; f++) {
-      helper.update(dt);
+      // f=0 时精确采样 0.00s 姿态
+      helper.update(f === 0 ? 0 : dt);
       mesh.updateMatrixWorld(true);
 
       const landmarks: Record<string, [number, number, number]> = {};
@@ -412,7 +423,7 @@ export async function bakePure3DLandmarks(
     }
     mesh.updateMatrixWorld(true);
 
-    // 自动清除解算开头的静态 A-Pose 空白帧
+    // 自动强力清除解算首尾的静态 A-Pose 空白帧
     const cleanedFrames = cleanRestPoseFrames(rawBakedFrames, restLandmarks);
     const effectiveTotalFrames = cleanedFrames.length;
     const effectiveDuration = effectiveTotalFrames > 0 ? cleanedFrames[effectiveTotalFrames - 1].time : 0;
