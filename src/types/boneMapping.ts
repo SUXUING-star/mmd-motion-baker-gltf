@@ -92,11 +92,19 @@ export const StandardBone = {
 
 export type StandardBoneKey = (typeof StandardBone)[keyof typeof StandardBone];
 
-/** 垃圾/辅助骨骼黑名单关键字（防止误匹配终端骨或控制杆） */
+// 替换 GARBAGE_BONE_KEYWORDS 及过滤逻辑：避免误杀 bend / extend
 const GARBAGE_BONE_KEYWORDS = [
-  '_end', 'end', 'pole', 'target', 'handle', 'mmd_shadow', 'mmd_dummy',
+  '_end', 'pole', 'target', 'handle', 'mmd_shadow', 'mmd_dummy',
   'dummy', 'shadow', 'ik_parent', 'eye_control', '_ik', 'effector'
 ];
+
+function isGarbageBoneName(rawName: string): boolean {
+  const lower = rawName.toLowerCase();
+  if (GARBAGE_BONE_KEYWORDS.some((kw) => lower.includes(kw))) return true;
+  // 仅匹配独立词尾 end（如 HeadEnd / index_end），不误杀 bend / extend
+  return /(?:^|[_\.\-\s])end$/i.test(lower) || /End$/.test(rawName);
+}
+
 
 /**
  * 标准骨骼 -> 别名候选词库（按优先级排列）
@@ -139,43 +147,144 @@ export const BONE_CANDIDATE_MAP: Record<StandardBoneKey, string[]> = {
     'ToesR', 'Toe_R', 'ToeBase_R', 'rightToes', 'RightToeBase', 'toe.R'
   ],
   // 左手 5 指
-  [StandardBone.LeftThumb0]: ['左親指０', 'Thumb0L', 'Thumb_0_L', 'Thumb0_L', 'leftThumb0'],
-  [StandardBone.LeftThumb1]: ['左親指１', 'Thumb1L', 'Thumb_1_L', 'Thumb1_L', 'leftThumb1'],
-  [StandardBone.LeftThumb2]: ['左親指２', 'Thumb2L', 'Thumb_2_L', 'Thumb2_L', 'leftThumb2'],
-  [StandardBone.LeftIndex1]: ['左人指１', 'Index1L', 'Index_1_L', 'Index1_L', 'leftIndex1'],
-  [StandardBone.LeftIndex2]: ['左人指２', 'Index2L', 'Index_2_L', 'Index2_L', 'leftIndex2'],
-  [StandardBone.LeftIndex3]: ['左人指３', 'Index3L', 'Index_3_L', 'Index3_L', 'leftIndex3'],
-  [StandardBone.LeftMiddle1]: ['左中指１', 'Middle1L', 'Middle_1_L', 'Middle1_L', 'leftMiddle1'],
-  [StandardBone.LeftMiddle2]: ['左中指２', 'Middle2L', 'Middle_2_L', 'Middle2_L', 'leftMiddle2'],
-  [StandardBone.LeftMiddle3]: ['左中指３', 'Middle3L', 'Middle_3_L', 'Middle3_L', 'leftMiddle3'],
-  [StandardBone.LeftRing1]: ['左薬指１', 'Ring1L', 'Ring_1_L', 'Ring1_L', 'leftRing1'],
-  [StandardBone.LeftRing2]: ['左薬指２', 'Ring2L', 'Ring_2_L', 'Ring2_L', 'leftRing2'],
-  [StandardBone.LeftRing3]: ['左薬指３', 'Ring3L', 'Ring_3_L', 'Ring3_L', 'leftRing3'],
-  [StandardBone.LeftLittle1]: ['左小指１', 'Little1L', 'Pinky1L', 'Little_1_L', 'Pinky_1_L', 'leftLittle1'],
-  [StandardBone.LeftLittle2]: ['左小指２', 'Little2L', 'Pinky2L', 'Little_2_L', 'Pinky_2_L', 'leftLittle2'],
-  [StandardBone.LeftLittle3]: ['左小指３', 'Little3L', 'Pinky3L', 'Little_3_L', 'Pinky_3_L', 'leftLittle3'],
+    [StandardBone.LeftThumb0]: [
+      '左親指０', '左親指0', 'Thumb0L', 'Thumb_0_L', 'Thumb0_L', 'L_Thumb0', 'L_Thumb1',
+      'Thumb_01_L', 'thumb_01_l', 'LeftHandThumb1', 'leftThumbMetacarpal', 'leftThumb0'
+    ],
+    [StandardBone.LeftThumb1]: [
+      '左親指１', '左親指1', 'Thumb1L', 'Thumb_1_L', 'Thumb1_L', 'L_Thumb1', 'L_Thumb2',
+      'Thumb_02_L', 'thumb_02_l', 'LeftHandThumb2', 'leftThumbProximal', 'leftThumb1'
+    ],
+    [StandardBone.LeftThumb2]: [
+      '左親指２', '左親指2', 'Thumb2L', 'Thumb_2_L', 'Thumb2_L', 'L_Thumb2', 'L_Thumb3',
+      'Thumb_03_L', 'thumb_03_l', 'LeftHandThumb3', 'leftThumbDistal', 'leftThumb2'
+    ],
 
-  // 右手 5 指
-  [StandardBone.RightThumb0]: ['右親指０', 'Thumb0R', 'Thumb_0_R', 'Thumb0_R', 'rightThumb0'],
-  [StandardBone.RightThumb1]: ['右親指１', 'Thumb1R', 'Thumb_1_R', 'Thumb1_R', 'rightThumb1'],
-  [StandardBone.RightThumb2]: ['右親指２', 'Thumb2R', 'Thumb_2_R', 'Thumb2_R', 'rightThumb2'],
-  [StandardBone.RightIndex1]: ['右人指１', 'Index1R', 'Index_1_R', 'Index1_R', 'rightIndex1'],
-  [StandardBone.RightIndex2]: ['右人指２', 'Index2R', 'Index_2_R', 'Index2_R', 'rightIndex2'],
-  [StandardBone.RightIndex3]: ['右人指３', 'Index3R', 'Index_3_R', 'Index3_R', 'rightIndex3'],
-  [StandardBone.RightMiddle1]: ['右中指１', 'Middle1R', 'Middle_1_R', 'Middle1_R', 'rightMiddle1'],
-  [StandardBone.RightMiddle2]: ['右中指２', 'Middle2R', 'Middle_2_R', 'Middle2_R', 'rightMiddle2'],
-  [StandardBone.RightMiddle3]: ['右中指３', 'Middle3R', 'Middle_3_R', 'Middle3_R', 'rightMiddle3'],
-  [StandardBone.RightRing1]: ['右薬指１', 'Ring1R', 'Ring_1_R', 'Ring1_R', 'rightRing1'],
-  [StandardBone.RightRing2]: ['右薬指２', 'Ring2R', 'Ring_2_R', 'Ring2_R', 'rightRing2'],
-  [StandardBone.RightRing3]: ['右薬指３', 'Ring3R', 'Ring_3_R', 'Ring3_R', 'rightRing3'],
-  [StandardBone.RightLittle1]: ['右小指１', 'Little1R', 'Pinky1R', 'Little_1_R', 'Pinky_1_R', 'rightLittle1'],
-  [StandardBone.RightLittle2]: ['右小指２', 'Little2R', 'Pinky2R', 'Little_2_R', 'Pinky_2_R', 'rightLittle2'],
-  [StandardBone.RightLittle3]: ['右小指３', 'Little3R', 'Pinky3R', 'Little_3_R', 'Pinky_3_R', 'rightLittle3'],
+    [StandardBone.LeftIndex1]: [
+      '左人指１', '左人指1', '左人差し指１', '左人差指１', 'Index1L', 'Index_1_L', 'Index1_L', 'L_Index1',
+      'Index_01_L', 'index_01_l', 'LeftHandIndex1', 'leftIndexProximal', 'leftIndex1'
+    ],
+    [StandardBone.LeftIndex2]: [
+      '左人指２', '左人指2', '左人差し指２', '左人差指２', 'Index2L', 'Index_2_L', 'Index2_L', 'L_Index2',
+      'Index_02_L', 'index_02_l', 'LeftHandIndex2', 'leftIndexIntermediate', 'leftIndex2'
+    ],
+    [StandardBone.LeftIndex3]: [
+      '左人指３', '左人指3', '左人差し指３', '左人差指３', 'Index3L', 'Index_3_L', 'Index3_L', 'L_Index3',
+      'Index_03_L', 'index_03_l', 'LeftHandIndex3', 'leftIndexDistal', 'leftIndex3'
+    ],
+
+    [StandardBone.LeftMiddle1]: [
+      '左中指１', '左中指1', 'Middle1L', 'Middle_1_L', 'Middle1_L', 'L_Middle1',
+      'Middle_01_L', 'middle_01_l', 'LeftHandMiddle1', 'leftMiddleProximal', 'leftMiddle1'
+    ],
+    [StandardBone.LeftMiddle2]: [
+      '左中指２', '左中指2', 'Middle2L', 'Middle_2_L', 'Middle2_L', 'L_Middle2',
+      'Middle_02_L', 'middle_02_l', 'LeftHandMiddle2', 'leftMiddleIntermediate', 'leftMiddle2'
+    ],
+    [StandardBone.LeftMiddle3]: [
+      '左中指３', '左中指3', 'Middle3L', 'Middle_3_L', 'Middle3_L', 'L_Middle3',
+      'Middle_03_L', 'middle_03_l', 'LeftHandMiddle3', 'leftMiddleDistal', 'leftMiddle3'
+    ],
+
+    [StandardBone.LeftRing1]: [
+      '左薬指１', '左薬指1', '左藥指１', 'Ring1L', 'Ring_1_L', 'Ring1_L', 'L_Ring1',
+      'Ring_01_L', 'ring_01_l', 'LeftHandRing1', 'leftRingProximal', 'leftRing1'
+    ],
+    [StandardBone.LeftRing2]: [
+      '左薬指２', '左薬指2', '左藥指２', 'Ring2L', 'Ring_2_L', 'Ring2_L', 'L_Ring2',
+      'Ring_02_L', 'ring_02_l', 'LeftHandRing2', 'leftRingIntermediate', 'leftRing2'
+    ],
+    [StandardBone.LeftRing3]: [
+      '左薬指３', '左薬指3', '左藥指３', 'Ring3L', 'Ring_3_L', 'Ring3_L', 'L_Ring3',
+      'Ring_03_L', 'ring_03_l', 'LeftHandRing3', 'leftRingDistal', 'leftRing3'
+    ],
+
+    [StandardBone.LeftLittle1]: [
+      '左小指１', '左小指1', 'Little1L', 'Pinky1L', 'Little_1_L', 'Pinky_1_L', 'L_Little1', 'L_Pinky1',
+      'Pinky_01_L', 'pinky_01_l', 'Little_01_L', 'LeftHandPinky1', 'leftLittleProximal', 'leftLittle1'
+    ],
+    [StandardBone.LeftLittle2]: [
+      '左小指２', '左小指2', 'Little2L', 'Pinky2L', 'Little_2_L', 'Pinky_2_L', 'L_Little2', 'L_Pinky2',
+      'Pinky_02_L', 'pinky_02_l', 'Little_02_L', 'LeftHandPinky2', 'leftLittleIntermediate', 'leftLittle2'
+    ],
+    [StandardBone.LeftLittle3]: [
+      '左小指３', '左小指3', 'Little3L', 'Pinky3L', 'Little_3_L', 'Pinky_3_L', 'L_Little3', 'L_Pinky3',
+      'Pinky_03_L', 'pinky_03_l', 'Little_03_L', 'LeftHandPinky3', 'leftLittleDistal', 'leftLittle3'
+    ],
+
+    // 右手 5 指
+    [StandardBone.RightThumb0]: [
+      '右親指０', '右親指0', 'Thumb0R', 'Thumb_0_R', 'Thumb0_R', 'R_Thumb0', 'R_Thumb1',
+      'Thumb_01_R', 'thumb_01_r', 'RightHandThumb1', 'rightThumbMetacarpal', 'rightThumb0'
+    ],
+    [StandardBone.RightThumb1]: [
+      '右親指１', '右親指1', 'Thumb1R', 'Thumb_1_R', 'Thumb1_R', 'R_Thumb1', 'R_Thumb2',
+      'Thumb_02_R', 'thumb_02_r', 'RightHandThumb2', 'rightThumbProximal', 'rightThumb1'
+    ],
+    [StandardBone.RightThumb2]: [
+      '右親指２', '右親指2', 'Thumb2R', 'Thumb_2_R', 'Thumb2_R', 'R_Thumb2', 'R_Thumb3',
+      'Thumb_03_R', 'thumb_03_r', 'RightHandThumb3', 'rightThumbDistal', 'rightThumb2'
+    ],
+
+    [StandardBone.RightIndex1]: [
+      '右人指１', '右人指1', '右人差し指１', '右人差指１', 'Index1R', 'Index_1_R', 'Index1_R', 'R_Index1',
+      'Index_01_R', 'index_01_r', 'RightHandIndex1', 'rightIndexProximal', 'rightIndex1'
+    ],
+    [StandardBone.RightIndex2]: [
+      '右人指２', '右人指2', '右人差し指２', '右人差指２', 'Index2R', 'Index_2_R', 'Index2_R', 'R_Index2',
+      'Index_02_R', 'index_02_r', 'RightHandIndex2', 'rightIndexIntermediate', 'rightIndex2'
+    ],
+    [StandardBone.RightIndex3]: [
+      '右人指３', '右人指3', '右人差し指３', '右人差指３', 'Index3R', 'Index_3_R', 'Index3_R', 'R_Index3',
+      'Index_03_R', 'index_03_r', 'RightHandIndex3', 'rightIndexDistal', 'rightIndex3'
+    ],
+
+    [StandardBone.RightMiddle1]: [
+      '右中指１', '右中指1', 'Middle1R', 'Middle_1_R', 'Middle1_R', 'R_Middle1',
+      'Middle_01_R', 'middle_01_r', 'RightHandMiddle1', 'rightMiddleProximal', 'rightMiddle1'
+    ],
+    [StandardBone.RightMiddle2]: [
+      '右中指２', '右中指2', 'Middle2R', 'Middle_2_R', 'Middle2_R', 'R_Middle2',
+      'Middle_02_R', 'middle_02_r', 'RightHandMiddle2', 'rightMiddleIntermediate', 'rightMiddle2'
+    ],
+    [StandardBone.RightMiddle3]: [
+      '右中指３', '右中指3', 'Middle3R', 'Middle_3_R', 'Middle3_R', 'R_Middle3',
+      'Middle_03_R', 'middle_03_r', 'RightHandMiddle3', 'rightMiddleDistal', 'rightMiddle3'
+    ],
+
+    [StandardBone.RightRing1]: [
+      '右薬指１', '右薬指1', '右藥指１', 'Ring1R', 'Ring_1_R', 'Ring1_R', 'R_Ring1',
+      'Ring_01_R', 'ring_01_r', 'RightHandRing1', 'rightRingProximal', 'rightRing1'
+    ],
+    [StandardBone.RightRing2]: [
+      '右薬指２', '右薬指2', '右藥指２', 'Ring2R', 'Ring_2_R', 'Ring2_R', 'R_Ring2',
+      'Ring_02_R', 'ring_02_r', 'RightHandRing2', 'rightRingIntermediate', 'rightRing2'
+    ],
+    [StandardBone.RightRing3]: [
+      '右薬指３', '右薬指3', '右藥指３', 'Ring3R', 'Ring_3_R', 'Ring3_R', 'R_Ring3',
+      'Ring_03_R', 'ring_03_r', 'RightHandRing3', 'rightRingDistal', 'rightRing3'
+    ],
+
+    [StandardBone.RightLittle1]: [
+      '右小指１', '右小指1', 'Little1R', 'Pinky1R', 'Little_1_R', 'Pinky_1_R', 'R_Little1', 'R_Pinky1',
+      'Pinky_01_R', 'pinky_01_r', 'Little_01_R', 'RightHandPinky1', 'rightLittleProximal', 'rightLittle1'
+    ],
+    [StandardBone.RightLittle2]: [
+      '右小指２', '右小指2', 'Little2R', 'Pinky2R', 'Little_2_R', 'Pinky_2_R', 'R_Little2', 'R_Pinky2',
+      'Pinky_02_R', 'pinky_02_r', 'Little_02_R', 'RightHandPinky2', 'rightLittleIntermediate', 'rightLittle2'
+    ],
+    [StandardBone.RightLittle3]: [
+      '右小指３', '右小指3', 'Little3R', 'Pinky3R', 'Little_3_R', 'Pinky_3_R', 'R_Little3', 'R_Pinky3',
+      'Pinky_03_R', 'pinky_03_r', 'Little_03_R', 'RightHandPinky3', 'rightLittleDistal', 'rightLittle3'
+  ],
 };
 
-/** 归一化清洗（去除所有特殊符号与分隔符，统一转小写） */
+// 替换 normalizeString：增加全角字符（如 ０-９）转半角
 function normalizeString(str: string): string {
-  return str.toLowerCase().replace(/[_\s\.\:\/\-]/g, '');
+  const half = str.replace(/[\uFF01-\uFF5E]/g, (ch) =>
+    String.fromCharCode(ch.charCodeAt(0) - 0xFEE0)
+  );
+  return half.toLowerCase().replace(/[_\s\.\:\/\-]/g, '');
 }
 
 /** 剥离 UmaViewer 等工具导出的各种模型编号、人物前缀与层级路径 */

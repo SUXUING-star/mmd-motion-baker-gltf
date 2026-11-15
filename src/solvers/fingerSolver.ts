@@ -1,33 +1,67 @@
 // src/solvers/fingerSolver.ts
 import * as THREE from 'three';
 import { StandardBone } from '../types/boneMapping';
-import { clamp, getV } from './mathUtils';
+import { clamp, getV, hasBone, inv, makeOrthoBasis } from './mathUtils';
 
 const PI = Math.PI;
 
-function getJointBendAngle(
-  p0: THREE.Vector3,
-  p1: THREE.Vector3,
-  p2: THREE.Vector3
-): number {
-  const v1 = new THREE.Vector3().subVectors(p1, p0);
-  const v2 = new THREE.Vector3().subVectors(p2, p1);
-  const l1 = v1.length();
-  const l2 = v2.length();
-  if (l1 < 1e-4 || l2 < 1e-4) return 0;
+function computeFallbackHandBasis(
+  lm: Record<string, [number, number, number]>,
+  isLeft: boolean
+): THREE.Quaternion | null {
+  const wristKey = isLeft ? StandardBone.LeftHand : StandardBone.RightHand;
+  const idxKey = isLeft ? StandardBone.LeftIndex1 : StandardBone.RightIndex1;
+  const pinkyKey = isLeft ? StandardBone.LeftLittle1 : StandardBone.RightLittle1;
+  const midKey = isLeft ? StandardBone.LeftMiddle1 : StandardBone.RightMiddle1;
 
-  const dot = clamp(v1.dot(v2) / (l1 * l2), -1.0, 1.0);
-  return Math.acos(dot);
+  if (!hasBone(lm, wristKey) || !hasBone(lm, midKey) || !hasBone(lm, idxKey) || !hasBone(lm, pinkyKey)) {
+    return null;
+  }
+
+  const pWrist = getV(lm, wristKey);
+  const pMiddle1 = getV(lm, midKey);
+  const pIndex1 = getV(lm, idxKey);
+  const pPinky1 = getV(lm, pinkyKey);
+
+  const dir = new THREE.Vector3().subVectors(pMiddle1, pWrist);
+  const sideVecDiff = new THREE.Vector3().subVectors(pIndex1, pPinky1);
+  if (dir.lengthSq() < 1e-6 || sideVecDiff.lengthSq() < 1e-6) return null;
+
+  const boneDir = dir.normalize();
+  const sideVec = sideVecDiff.normalize();
+  const axisX = isLeft ? boneDir.clone() : boneDir.clone().negate();
+  const axisY = isLeft
+    ? new THREE.Vector3().crossVectors(sideVec, boneDir).normalize()
+    : new THREE.Vector3().crossVectors(boneDir, sideVec).normalize();
+
+  if (axisY.lengthSq() < 1e-4 || isNaN(axisY.x)) return null;
+  const axisZ = new THREE.Vector3().crossVectors(axisX, axisY).normalize();
+  return makeOrthoBasis(axisX, axisY, axisZ);
+}
+
+function measureSignedCurl(vLocal: THREE.Vector3, isLeft: boolean): number {
+  const fwd = isLeft ? vLocal.x : -vLocal.x;
+  const horiz = Math.hypot(fwd, vLocal.z) * (fwd >= 0 ? 1 : -1);
+  let curl = Math.atan2(-vLocal.y, horiz);
+  if (curl < -PI * 0.5) curl += PI * 2;
+  return curl;
 }
 
 export function solveFingers(
   lm: Record<string, [number, number, number]>,
-  isLeft: boolean
+  isLeft: boolean,
+  handWorldQ?: THREE.Quaternion,
+  restLm?: Record<string, [number, number, number]>
 ) {
   const sideKey = isLeft ? 'left' : 'right';
-  const wristKey = isLeft ? StandardBone.LeftHand : StandardBone.RightHand;
-  const wrist = getV(lm, wristKey);
   const results: Record<string, THREE.Quaternion> = {};
+
+  const activeHandQ =
+    handWorldQ || computeFallbackHandBasis(lm, isLeft) || new THREE.Quaternion(0, 0, 0, 1);
+  const handInv = inv(activeHandQ);
+
+  const restHandQ = restLm ? computeFallbackHandBasis(restLm, isLeft) : null;
+  const restHandInv = restHandQ ? inv(restHandQ) : null;
 
   const fingerGroups = [
     {
@@ -56,23 +90,66 @@ export function solveFingers(
     },
   ] as const;
 
-  // 1. 食指、中指、无名指、小指
+  // 1. 食指、中指、无名指、小指（在手掌局部系下解算带正负号的屈曲 + 扇形张开）
   fingerGroups.forEach(({ name, k1, k2, k3 }) => {
-    const p1 = getV(lm, k1, wrist);
-    const p2 = getV(lm, k2, p1);
-    const p3 = getV(lm, k3, p2);
+    const has12 = hasBone(lm, k1) && hasBone(lm, k2);
+    if (!has12) {
+      results[`${sideKey}${name}Proximal`] = new THREE.Quaternion(0, 0, 0, 1);
+      results[`${sideKey}${name}Intermediate`] = new THREE.Quaternion(0, 0, 0, 1);
+      results[`${sideKey}${name}Distal`] = new THREE.Quaternion(0, 0, 0, 1);
+      return;
+    }
 
-    const bProx = clamp(getJointBendAngle(wrist, p1, p2), 0, PI * 0.6);
-    const bInter = clamp(getJointBendAngle(p1, p2, p3), 0, PI * 0.6);
-    const bDist = bInter * 0.75;
+    const p1 = getV(lm, k1);
+    const p2 = getV(lm, k2);
+    const d1World = new THREE.Vector3().subVectors(p2, p1);
+    if (d1World.lengthSq() < 1e-8) {
+      results[`${sideKey}${name}Proximal`] = new THREE.Quaternion(0, 0, 0, 1);
+      results[`${sideKey}${name}Intermediate`] = new THREE.Quaternion(0, 0, 0, 1);
+      results[`${sideKey}${name}Distal`] = new THREE.Quaternion(0, 0, 0, 1);
+      return;
+    }
 
-    const zRotProx = isLeft ? -bProx : bProx;
-    const zRotInter = isLeft ? -bInter : bInter;
-    const zRotDist = isLeft ? -bDist : bDist;
+    const d1Local = d1World.normalize().applyQuaternion(handInv).normalize();
+    const curlProx = clamp(measureSignedCurl(d1Local, isLeft), -0.2, PI * 0.65);
 
-    results[`${sideKey}${name}Proximal`] = new THREE.Quaternion().setFromEuler(
-      new THREE.Euler(0, 0, zRotProx, 'XYZ')
+    // 侧向张开角（扣除 Rest Pose 自带的自然指缝张角，并在深握拳时平滑衰减防万向锁噪点）
+    const fwd1 = isLeft ? d1Local.x : -d1Local.x;
+    let restSpread = 0;
+    if (restLm && restHandInv && hasBone(restLm, k1) && hasBone(restLm, k2)) {
+      const rDiff = new THREE.Vector3().subVectors(getV(restLm, k2), getV(restLm, k1));
+      if (rDiff.lengthSq() > 1e-8) {
+        const rLocal = rDiff.normalize().applyQuaternion(restHandInv).normalize();
+        const rFwd = isLeft ? rLocal.x : -rLocal.x;
+        restSpread = Math.atan2(rLocal.z, Math.max(0.2, rFwd));
+      }
+    }
+    const rawSpread = Math.atan2(d1Local.z, Math.max(0.2, fwd1));
+    const spreadWeight = clamp((fwd1 - 0.1) / 0.4, 0, 1);
+    const spreadProx = clamp((rawSpread - restSpread) * spreadWeight, -0.35, 0.35);
+
+    const zRotProx = isLeft ? -curlProx : curlProx;
+    const yRotProx = isLeft ? -spreadProx : spreadProx;
+    const qProx = new THREE.Quaternion().setFromEuler(
+      new THREE.Euler(0, yRotProx, zRotProx, 'YZX')
     );
+
+    let curlInter = clamp(curlProx * 0.85, 0, PI * 0.65);
+    if (hasBone(lm, k3)) {
+      const p3 = getV(lm, k3);
+      const d2World = new THREE.Vector3().subVectors(p3, p2);
+      if (d2World.lengthSq() > 1e-8) {
+        const d2InHand = d2World.normalize().applyQuaternion(handInv);
+        const d2InProx = d2InHand.applyQuaternion(inv(qProx)).normalize();
+        curlInter = clamp(measureSignedCurl(d2InProx, isLeft), -0.1, PI * 0.72);
+      }
+    }
+
+    const curlDist = clamp(curlInter * 0.75, 0, PI * 0.55);
+    const zRotInter = isLeft ? -curlInter : curlInter;
+    const zRotDist = isLeft ? -curlDist : curlDist;
+
+    results[`${sideKey}${name}Proximal`] = qProx;
     results[`${sideKey}${name}Intermediate`] = new THREE.Quaternion().setFromEuler(
       new THREE.Euler(0, 0, zRotInter, 'XYZ')
     );
@@ -81,39 +158,77 @@ export function solveFingers(
     );
   });
 
-  // 2. 大拇指
+  // 2. 大拇指（在手掌局部系下做 3D 方向增量求解，支持扣向掌心与两节/三节拇指）
   const t0Key = isLeft ? StandardBone.LeftThumb0 : StandardBone.RightThumb0;
   const t1Key = isLeft ? StandardBone.LeftThumb1 : StandardBone.RightThumb1;
   const t2Key = isLeft ? StandardBone.LeftThumb2 : StandardBone.RightThumb2;
 
-  const t0 = getV(lm, t0Key, wrist);
-  const t1 = getV(lm, t1Key, t0);
-  const t2 = getV(lm, t2Key, t1);
+  const hasT0 = hasBone(lm, t0Key);
+  const hasT1 = hasBone(lm, t1Key);
+  const hasT2 = hasBone(lm, t2Key);
 
-  const tBendBase = clamp(getJointBendAngle(wrist, t0, t1), 0, PI * 0.5);
-  const tBendMid = clamp(getJointBendAngle(t0, t1, t2), 0, PI * 0.5);
+  const fallbackThumbDir = new THREE.Vector3(isLeft ? 0.65 : -0.65, -0.25, 0.72).normalize();
+  let restDir01 = fallbackThumbDir.clone();
+  let restDir12 = fallbackThumbDir.clone();
 
-  if (isLeft) {
-    results[`leftThumbMetacarpal`] = new THREE.Quaternion().setFromEuler(
-      new THREE.Euler(0.1, -0.25, -tBendBase * 0.6, 'XYZ')
-    );
-    results[`leftThumbProximal`] = new THREE.Quaternion().setFromEuler(
-      new THREE.Euler(0, 0, -tBendMid * 0.8, 'XYZ')
-    );
-    results[`leftThumbDistal`] = new THREE.Quaternion().setFromEuler(
-      new THREE.Euler(0, 0, -tBendMid * 0.6, 'XYZ')
-    );
-  } else {
-    results[`rightThumbMetacarpal`] = new THREE.Quaternion().setFromEuler(
-      new THREE.Euler(0.1, 0.25, tBendBase * 0.6, 'XYZ')
-    );
-    results[`rightThumbProximal`] = new THREE.Quaternion().setFromEuler(
-      new THREE.Euler(0, 0, tBendMid * 0.8, 'XYZ')
-    );
-    results[`rightThumbDistal`] = new THREE.Quaternion().setFromEuler(
-      new THREE.Euler(0, 0, tBendMid * 0.6, 'XYZ')
-    );
+  if (restLm && restHandInv) {
+    if (hasBone(restLm, t0Key) && hasBone(restLm, t1Key)) {
+      const r01 = new THREE.Vector3().subVectors(getV(restLm, t1Key), getV(restLm, t0Key));
+      if (r01.lengthSq() > 1e-8) {
+        restDir01 = r01.normalize().applyQuaternion(restHandInv).normalize();
+      }
+    }
+    if (hasBone(restLm, t1Key) && hasBone(restLm, t2Key)) {
+      const r12 = new THREE.Vector3().subVectors(getV(restLm, t2Key), getV(restLm, t1Key));
+      if (r12.lengthSq() > 1e-8) {
+        restDir12 = r12.normalize().applyQuaternion(restHandInv).normalize();
+      }
+    } else {
+      restDir12 = restDir01.clone();
+    }
   }
+
+  let qThumbMeta = new THREE.Quaternion(0, 0, 0, 1);
+  let qThumbProx = new THREE.Quaternion(0, 0, 0, 1);
+  let qThumbDist = new THREE.Quaternion(0, 0, 0, 1);
+
+  if (hasT0 && hasT1) {
+    const t0 = getV(lm, t0Key);
+    const t1 = getV(lm, t1Key);
+    const cur01World = new THREE.Vector3().subVectors(t1, t0);
+    if (cur01World.lengthSq() > 1e-8) {
+      const cur01Local = cur01World.normalize().applyQuaternion(handInv).normalize();
+      qThumbMeta.setFromUnitVectors(restDir01, cur01Local).normalize();
+    }
+
+    if (hasT2) {
+      const t2 = getV(lm, t2Key);
+      const cur12World = new THREE.Vector3().subVectors(t2, t1);
+      if (cur12World.lengthSq() > 1e-8) {
+        const cur12InHand = cur12World.normalize().applyQuaternion(handInv);
+        const cur12AfterMeta = cur12InHand.applyQuaternion(inv(qThumbMeta)).normalize();
+        qThumbProx.setFromUnitVectors(restDir12, cur12AfterMeta).normalize();
+        qThumbDist = new THREE.Quaternion().slerp(qThumbProx, 0.65).normalize();
+      }
+    } else {
+      // 兼容仅 2 节拇指的模型（Thumb0 + Thumb1）
+      qThumbProx = new THREE.Quaternion().slerp(qThumbMeta, 0.7).normalize();
+      qThumbDist = new THREE.Quaternion().slerp(qThumbMeta, 0.5).normalize();
+    }
+  } else if (hasT1 && hasT2) {
+    const t1 = getV(lm, t1Key);
+    const t2 = getV(lm, t2Key);
+    const cur12World = new THREE.Vector3().subVectors(t2, t1);
+    if (cur12World.lengthSq() > 1e-8) {
+      const cur12Local = cur12World.normalize().applyQuaternion(handInv).normalize();
+      qThumbProx.setFromUnitVectors(restDir12, cur12Local).normalize();
+      qThumbDist = new THREE.Quaternion().slerp(qThumbProx, 0.65).normalize();
+    }
+  }
+
+  results[`${sideKey}ThumbMetacarpal`] = qThumbMeta;
+  results[`${sideKey}ThumbProximal`] = qThumbProx;
+  results[`${sideKey}ThumbDistal`] = qThumbDist;
 
   return results;
 }

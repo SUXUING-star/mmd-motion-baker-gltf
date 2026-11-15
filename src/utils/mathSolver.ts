@@ -24,8 +24,8 @@ function solveSingleFramePose(
     spine.spineUp,
     restLm
   );
-  const leftFingers = solveFingers(lm, true);
-  const rightFingers = solveFingers(lm, false);
+  const leftFingers = solveFingers(lm, true, limbs.leftHandWorldQ, restLm);
+  const rightFingers = solveFingers(lm, false, limbs.rightHandWorldQ, restLm);
 
   return {
     hipsPos: hips.hipsPosition,
