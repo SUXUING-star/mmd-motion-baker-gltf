@@ -2,8 +2,9 @@
 import type { VRMCVRMAnimation } from '@pixiv/types-vrmc-vrm-animation-1.0';
 import * as THREE from 'three';
 import { GLTFExporter } from 'three/examples/jsm/exporters/GLTFExporter.js';
+import { HUMANOID_BONES, HumanoidBoneName } from '../types/boneMapping';
 import { isPresetExpression } from '../types/expressionMapping';
-import { HUMANOID_BONES, HumanoidBoneName, LandmarkData } from '../types/types';
+import { LandmarkData } from '../types/types';
 import { solveAllHumanoidQuaternions } from './mathSolver';
 
 /** VRMA 元数据配置接口 */

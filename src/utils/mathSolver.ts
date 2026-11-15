@@ -5,8 +5,8 @@ import { solveHips } from '../solvers/hipsSolver';
 import { solveLimbs } from '../solvers/limbSolver';
 import { ensureQuatContinuity, getV, hasBone } from '../solvers/mathUtils';
 import { solveSpine } from '../solvers/spineSolver';
-import { StandardBone } from '../types/boneMapping';
-import { HUMANOID_BONES, HumanoidBoneName, LandmarkData, LandmarkFrame } from '../types/types';
+import { HUMANOID_BONES, HumanoidBoneName, StandardBone } from '../types/boneMapping';
+import { LandmarkData, LandmarkFrame } from '../types/types';
 
 function solveSingleFramePose(
   lm: Record<string, [number, number, number]>,
