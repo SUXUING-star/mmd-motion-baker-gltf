@@ -345,9 +345,7 @@ export function resolveModelBones(bonesOrObject: THREE.Bone[] | THREE.Object3D):
 
   uniqueBones.forEach((b) => {
     const rawName = b.name.trim();
-    const lower = rawName.toLowerCase();
-    const isGarbage = GARBAGE_BONE_KEYWORDS.some((kw) => lower.includes(kw));
-    if (isGarbage) return;
+    if (isGarbageBoneName(rawName)) return;
 
     // 变体收集
     const variants = getCleanBoneNameVariants(rawName);
