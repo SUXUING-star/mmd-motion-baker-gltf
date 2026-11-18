@@ -53,6 +53,7 @@ export function useTimelinePlayback(
   const currentFrameRef = useRef<number>(0);
   const startFrameRef = useRef<number>(0);
   const endFrameRef = useRef<number>(0);
+  const loopRestartFrameRef = useRef<number | null>(null);
   const isPlayingRef = useRef<boolean>(false);
 
   const threeBridgeRef = useRef(threeBridge);
@@ -141,8 +142,16 @@ export function useTimelinePlayback(
       timerRef.current = window.setInterval(() => {
         const start = startFrameRef.current;
         const end = endFrameRef.current;
+        const loopRestart = loopRestartFrameRef.current;
+        const restartTarget =
+          loopRestart !== null && loopRestart >= start && loopRestart < end
+            ? loopRestart
+            : start;
+
         let next = currentFrameRef.current + 1;
-        if (next > end || next < start) {
+        if (next > end) {
+          next = restartTarget;
+        } else if (next < start) {
           next = start;
         }
         currentFrameRef.current = next;
@@ -172,6 +181,9 @@ export function useTimelinePlayback(
       fpsRef.current = landmarkData.fps;
       startFrameRef.current = 0;
       endFrameRef.current = defaultEnd;
+      loopRestartFrameRef.current = landmarkData.loopMode
+         ? (landmarkData.loopStartFrame ?? 0)
+         : null;
 
       setMaxFrames(total);
       setFps(landmarkData.fps);
@@ -199,6 +211,9 @@ export function useTimelinePlayback(
       setFps(landmarkData.fps);
       setStartFrame(0);
       setEndFrame(defaultEnd);
+      loopRestartFrameRef.current = landmarkData.loopMode
+          ? (landmarkData.loopStartFrame ?? 0)
+          : null;
 
       if (currentFrameRef.current >= total) {
         currentFrameRef.current = 0;
@@ -220,11 +235,13 @@ export function useTimelinePlayback(
       fpsRef.current = camData.fps;
       startFrameRef.current = 0;
       endFrameRef.current = defaultEnd;
+      loopRestartFrameRef.current = null;
 
       setMaxFrames(total);
       setFps(camData.fps);
       setStartFrame(0);
       setEndFrame(defaultEnd);
+
 
       startPlayback(0);
     },
@@ -292,11 +309,13 @@ export function useTimelinePlayback(
     currentFrameRef.current = 0;
     startFrameRef.current = 0;
     endFrameRef.current = 0;
+    loopRestartFrameRef.current = null;
     setMaxFrames(0);
     setFps(30);
     setCurrentFrame(0);
     setStartFrame(0);
     setEndFrame(0);
+
   }, [stopPlayback]);
 
   return {

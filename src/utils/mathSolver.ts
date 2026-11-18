@@ -104,11 +104,16 @@ export function solveAllHumanoidQuaternions(data: LandmarkData) {
     data.bridgeLeadIn?.length === data.loopBridgeFrames &&
     data.loopBridgeFrames < frameCount;
 
+  const loopStart =
+    hasOverlapBridge || data.loopMode === 'warp'
+      ? Math.max(0, Math.min(frameCount - 2, data.loopStartFrame ?? 0))
+      : 0;
+
   const isWarpMode =
     data.loopMode === 'warp' &&
     !!data.loopBridgeFrames &&
     data.loopBridgeFrames > 0 &&
-    frameCount > 6;
+    frameCount - loopStart > 6;
 
   const bridgeCount = hasOverlapBridge ? data.loopBridgeFrames! : 0;
   const bodyCount = frameCount - bridgeCount;
@@ -118,7 +123,7 @@ export function solveAllHumanoidQuaternions(data: LandmarkData) {
   const quatTracksData: Record<HumanoidBoneName, number[]> = {} as any;
   HUMANOID_BONES.forEach((k) => (quatTracksData[k] = []));
 
-  // 1. 解算主体帧（Overlap 模式下为 bodyCount 帧；Warp 或无循环下为全部帧）
+  // 1. 解算主体帧（包含前导动作 + 循环体）
   const bodyRes = solveSequenceContinuous(
     frames.slice(0, bodyCount),
     scaleFactor,
@@ -145,11 +150,22 @@ export function solveAllHumanoidQuaternions(data: LandmarkData) {
       bodyRes.lastPrevQuats
     );
 
+    // 若保留了前导动作，Track B 从 bodyRes 在 S 处的四元数半球延续，避免跨半圈符号翻转
+    let initResB: Partial<Record<HumanoidBoneName, THREE.Quaternion>> | undefined;
+    const safeStartInBody = loopStart - bridgeCount;
+    if (loopStart > 0 && safeStartInBody >= 0 && safeStartInBody < bodyCount) {
+      initResB = {};
+      HUMANOID_BONES.forEach((k) => {
+        initResB![k] = bodyRes.quatsArr[k][safeStartInBody].clone();
+      });
+    }
+
     const resB = solveSequenceContinuous(
       data.bridgeLeadIn!,
       scaleFactor,
       ankleBaseY,
-      restLm
+      restLm,
+      initResB
     );
 
     const prevMergedQuats: Partial<Record<HumanoidBoneName, THREE.Quaternion>> = {
@@ -187,25 +203,29 @@ export function solveAllHumanoidQuaternions(data: LandmarkData) {
       });
     }
 
-    // 原地循环：从拼接后的 hipsPositions 扣除线性 XZ 前进斜坡，保留 100% 摇摆和 Y 起伏
-    if (data.loopInPlace && frameCount > 1) {
-      const firstX = hipsPositions[0];
-      const firstZ = hipsPositions[2];
+    // 原地循环：仅对循环区 [loopStart .. frameCount - 1] 扣除残余线性 XZ 偏移，前导动作保持原样
+    if (data.loopInPlace && frameCount - loopStart > 1) {
+      const startIdx = loopStart * 3;
       const lastIdx = (frameCount - 1) * 3;
-      const driftX = hipsPositions[lastIdx] - firstX;
-      const driftZ = hipsPositions[lastIdx + 2] - firstZ;
+      const driftX = hipsPositions[lastIdx] - hipsPositions[startIdx];
+      const driftZ = hipsPositions[lastIdx + 2] - hipsPositions[startIdx + 2];
+      const span = frameCount - 1 - loopStart;
 
-      for (let i = 0; i < frameCount; i++) {
-        const frac = i / (frameCount - 1);
+      for (let i = loopStart; i < frameCount; i++) {
+        const frac = (i - loopStart) / span;
         hipsPositions[i * 3] -= driftX * frac;
         hipsPositions[i * 3 + 2] -= driftZ * frac;
       }
     }
   }
 
-  // 2B. Additive Pose Warp 兜底模式（结尾无延续帧时，双向加性残差分散，100% 保持原动作摆幅）
+  // 2B. Additive Pose Warp 兜底模式（围绕 loopStart 与末尾 frameCount - 1 校准，不损坏前导动作）
   if (isWarpMode) {
-    const half = Math.max(2, Math.min(Math.floor((frameCount - 1) / 2), Math.floor(data.loopBridgeFrames! / 2)));
+    const loopLen = frameCount - loopStart;
+    const half = Math.max(
+      2,
+      Math.min(Math.floor((loopLen - 1) / 2), Math.floor(data.loopBridgeFrames! / 2))
+    );
     const qId = new THREE.Quaternion(0, 0, 0, 1);
     const qS = new THREE.Quaternion();
     const qE = new THREE.Quaternion();
@@ -215,63 +235,118 @@ export function solveAllHumanoidQuaternions(data: LandmarkData) {
 
     HUMANOID_BONES.forEach((k) => {
       const arr = quatTracksData[k];
-      qS.set(arr[0], arr[1], arr[2], arr[3]).normalize();
+      const sOff = loopStart * 4;
+      qS.set(arr[sOff], arr[sOff + 1], arr[sOff + 2], arr[sOff + 3]).normalize();
       const tail = (frameCount - 1) * 4;
       qE.set(arr[tail], arr[tail + 1], arr[tail + 2], arr[tail + 3]).normalize();
       if (qS.dot(qE) < 0) qE.set(-qE.x, -qE.y, -qE.z, -qE.w);
 
-      // qMid 为首尾折中点：尾端向前靠向 qMid，首端向后靠向 qMid，均保持原动作全部振荡幅度
       qDelta.copy(qE).invert().premultiply(qS); // qDelta * qE = qS
-      const qHalfDelta = new THREE.Quaternion().copy(qId).slerp(qDelta, 0.5);
-      const qHalfInv = qHalfDelta.clone().invert();
 
-      // 首部 [0 .. half-1] 从 qHalfInv(满) 平滑衰减至 0
-      for (let i = 0; i < half; i++) {
-        const u = 1 - i / half;
-        const w = u * u * (3 - 2 * u);
-        qCur.set(arr[i * 4], arr[i * 4 + 1], arr[i * 4 + 2], arr[i * 4 + 3]);
-        qCorr.copy(qId).slerp(qHalfInv, w);
-        qCur.premultiply(qCorr).normalize();
-        arr[i * 4] = qCur.x;
-        arr[i * 4 + 1] = qCur.y;
-        arr[i * 4 + 2] = qCur.z;
-        arr[i * 4 + 3] = qCur.w;
-      }
+      if (loopStart === 0 || loopStart >= 4) {
+        const qHalfDelta = new THREE.Quaternion().copy(qId).slerp(qDelta, 0.5);
+        const qHalfInv = qHalfDelta.clone().invert();
 
-      // 尾部 [frameCount - half .. frameCount - 1] 从 0 平滑爬升至 qHalfDelta(满)
-      for (let i = 0; i < half; i++) {
-        const idx = frameCount - half + i;
-        const u = (i + 1) / half;
-        const w = u * u * (3 - 2 * u);
-        qCur.set(arr[idx * 4], arr[idx * 4 + 1], arr[idx * 4 + 2], arr[idx * 4 + 3]);
-        qCorr.copy(qId).slerp(qHalfDelta, w);
-        qCur.premultiply(qCorr).normalize();
-        arr[idx * 4] = qCur.x;
-        arr[idx * 4 + 1] = qCur.y;
-        arr[idx * 4 + 2] = qCur.z;
-        arr[idx * 4 + 3] = qCur.w;
+        // 若有前导动作，同步在 loopStart 左侧过渡缓冲，防止前导->循环切点跳变
+        if (loopStart >= 4) {
+          const leftSpan = Math.min(half, loopStart);
+          for (let i = 0; i < leftSpan; i++) {
+            const idx = loopStart - leftSpan + i;
+            const u = i / leftSpan;
+            const w = u * u * (3 - 2 * u);
+            qCur.set(arr[idx * 4], arr[idx * 4 + 1], arr[idx * 4 + 2], arr[idx * 4 + 3]);
+            qCorr.copy(qId).slerp(qHalfInv, w);
+            qCur.premultiply(qCorr).normalize();
+            arr[idx * 4] = qCur.x;
+            arr[idx * 4 + 1] = qCur.y;
+            arr[idx * 4 + 2] = qCur.z;
+            arr[idx * 4 + 3] = qCur.w;
+          }
+        }
+
+        // 循环起点 [loopStart .. loopStart + half - 1]
+        for (let i = 0; i < half; i++) {
+          const idx = loopStart + i;
+          const u = 1 - i / half;
+          const w = u * u * (3 - 2 * u);
+          qCur.set(arr[idx * 4], arr[idx * 4 + 1], arr[idx * 4 + 2], arr[idx * 4 + 3]);
+          qCorr.copy(qId).slerp(qHalfInv, w);
+          qCur.premultiply(qCorr).normalize();
+          arr[idx * 4] = qCur.x;
+          arr[idx * 4 + 1] = qCur.y;
+          arr[idx * 4 + 2] = qCur.z;
+          arr[idx * 4 + 3] = qCur.w;
+        }
+
+        // 循环尾部 [frameCount - half .. frameCount - 1]
+        for (let i = 0; i < half; i++) {
+          const idx = frameCount - half + i;
+          const u = (i + 1) / half;
+          const w = u * u * (3 - 2 * u);
+          qCur.set(arr[idx * 4], arr[idx * 4 + 1], arr[idx * 4 + 2], arr[idx * 4 + 3]);
+          qCorr.copy(qId).slerp(qHalfDelta, w);
+          qCur.premultiply(qCorr).normalize();
+          arr[idx * 4] = qCur.x;
+          arr[idx * 4 + 1] = qCur.y;
+          arr[idx * 4 + 2] = qCur.z;
+          arr[idx * 4 + 3] = qCur.w;
+        }
+      } else {
+        // 前导极短（1~3帧）时，只向尾部平滑吸收全部残差，完全不动第 0..loopStart 帧
+        const tailSpan = Math.min(loopLen - 1, half * 2);
+        for (let i = 0; i < tailSpan; i++) {
+          const idx = frameCount - tailSpan + i;
+          const u = (i + 1) / tailSpan;
+          const w = u * u * (3 - 2 * u);
+          qCur.set(arr[idx * 4], arr[idx * 4 + 1], arr[idx * 4 + 2], arr[idx * 4 + 3]);
+          qCorr.copy(qId).slerp(qDelta, w);
+          qCur.premultiply(qCorr).normalize();
+          arr[idx * 4] = qCur.x;
+          arr[idx * 4 + 1] = qCur.y;
+          arr[idx * 4 + 2] = qCur.z;
+          arr[idx * 4 + 3] = qCur.w;
+        }
       }
     });
 
     // Hips Y 首尾差平滑校准
-    const h0y = hipsPositions[1];
+    const h0y = hipsPositions[loopStart * 3 + 1];
     const hNy = hipsPositions[(frameCount - 1) * 3 + 1];
     const dy = h0y - hNy;
-    for (let i = 0; i < half; i++) {
-      const wStart = 1 - i / half;
-      hipsPositions[i * 3 + 1] -= 0.5 * dy * wStart * wStart * (3 - 2 * wStart);
-      const tailIdx = frameCount - half + i;
-      const wEnd = (i + 1) / half;
-      hipsPositions[tailIdx * 3 + 1] += 0.5 * dy * wEnd * wEnd * (3 - 2 * wEnd);
+    if (loopStart === 0 || loopStart >= 4) {
+      if (loopStart >= 4) {
+        const leftSpan = Math.min(half, loopStart);
+        for (let i = 0; i < leftSpan; i++) {
+          const idx = loopStart - leftSpan + i;
+          const u = i / leftSpan;
+          hipsPositions[idx * 3 + 1] -= 0.5 * dy * u * u * (3 - 2 * u);
+        }
+      }
+      for (let i = 0; i < half; i++) {
+        const wStart = 1 - i / half;
+        hipsPositions[(loopStart + i) * 3 + 1] -= 0.5 * dy * wStart * wStart * (3 - 2 * wStart);
+        const tailIdx = frameCount - half + i;
+        const wEnd = (i + 1) / half;
+        hipsPositions[tailIdx * 3 + 1] += 0.5 * dy * wEnd * wEnd * (3 - 2 * wEnd);
+      }
+    } else {
+      const tailSpan = Math.min(loopLen - 1, half * 2);
+      for (let i = 0; i < tailSpan; i++) {
+        const idx = frameCount - tailSpan + i;
+        const u = (i + 1) / tailSpan;
+        hipsPositions[idx * 3 + 1] += dy * u * u * (3 - 2 * u);
+      }
     }
   }
 
-  // 3. 闭环环形轻微平滑与 Three.js LoopRepeat 首尾闭合契约
+  // 3. 闭环环形轻微平滑与闭合契约（前导段 0..loopStart-1 不回绕，仅 loopStart..frameCount-1 闭环）
   const isLoop = hasOverlapBridge || isWarpMode;
-  const period = isLoop ? frameCount - 1 : frameCount;
+  const activeCount = isLoop ? frameCount - 1 : frameCount;
+  const loopPeriod = Math.max(1, frameCount - 1 - loopStart);
+
   const resolveIndex = (i: number, offset: number): number => {
-    if (isLoop) {
-      return ((i + offset) % period + period) % period;
+    if (isLoop && i >= loopStart) {
+      return loopStart + (((i - loopStart + offset) % loopPeriod + loopPeriod) % loopPeriod);
     }
     return Math.max(0, Math.min(frameCount - 1, i + offset));
   };
@@ -279,14 +354,14 @@ export function solveAllHumanoidQuaternions(data: LandmarkData) {
   if (frameCount > 4) {
     for (let axis = 0; axis < 3; axis++) {
       const smoothed = new Float32Array(frameCount);
-      for (let i = 0; i < period; i++) {
+      for (let i = 0; i < activeCount; i++) {
         const p0 = hipsPositions[resolveIndex(i, -1) * 3 + axis];
         const p1 = hipsPositions[i * 3 + axis];
         const p2 = hipsPositions[resolveIndex(i, 1) * 3 + axis];
         smoothed[i] = (p0 + p1 * 2 + p2) / 4;
       }
       if (isLoop) {
-        smoothed[frameCount - 1] = smoothed[0];
+        smoothed[frameCount - 1] = smoothed[loopStart];
       }
       for (let i = 0; i < frameCount; i++) {
         hipsPositions[i * 3 + axis] = smoothed[i];
@@ -298,7 +373,7 @@ export function solveAllHumanoidQuaternions(data: LandmarkData) {
       const arr = quatTracksData[k];
       const out = new Float32Array(frameCount * 4);
 
-      for (let i = 0; i < period; i++) {
+      for (let i = 0; i < activeCount; i++) {
         const cx = arr[i * 4];
         const cy = arr[i * 4 + 1];
         const cz = arr[i * 4 + 2];
@@ -337,7 +412,7 @@ export function solveAllHumanoidQuaternions(data: LandmarkData) {
         out[i * 4 + 3] = sw / len;
       }
 
-      for (let i = 1; i < period; i++) {
+      for (let i = 1; i < activeCount; i++) {
         const px = out[(i - 1) * 4];
         const py = out[(i - 1) * 4 + 1];
         const pz = out[(i - 1) * 4 + 2];
@@ -357,30 +432,31 @@ export function solveAllHumanoidQuaternions(data: LandmarkData) {
       }
 
       if (isLoop) {
-        const lastPrevIdx = (period - 1) * 4;
-        let q0x = out[0];
-        let q0y = out[1];
-        let q0z = out[2];
-        let q0w = out[3];
+        const lastPrevIdx = (activeCount - 1) * 4;
+        const loopBase = loopStart * 4;
+        let qLx = out[loopBase];
+        let qLy = out[loopBase + 1];
+        let qLz = out[loopBase + 2];
+        let qLw = out[loopBase + 3];
 
         const dot =
-          out[lastPrevIdx] * q0x +
-          out[lastPrevIdx + 1] * q0y +
-          out[lastPrevIdx + 2] * q0z +
-          out[lastPrevIdx + 3] * q0w;
+          out[lastPrevIdx] * qLx +
+          out[lastPrevIdx + 1] * qLy +
+          out[lastPrevIdx + 2] * qLz +
+          out[lastPrevIdx + 3] * qLw;
 
         if (dot < 0) {
-          q0x = -q0x;
-          q0y = -q0y;
-          q0z = -q0z;
-          q0w = -q0w;
+          qLx = -qLx;
+          qLy = -qLy;
+          qLz = -qLz;
+          qLw = -qLw;
         }
 
         const tailIdx = (frameCount - 1) * 4;
-        out[tailIdx] = q0x;
-        out[tailIdx + 1] = q0y;
-        out[tailIdx + 2] = q0z;
-        out[tailIdx + 3] = q0w;
+        out[tailIdx] = qLx;
+        out[tailIdx + 1] = qLy;
+        out[tailIdx + 2] = qLz;
+        out[tailIdx + 3] = qLw;
       }
 
       for (let j = 0; j < out.length; j++) {

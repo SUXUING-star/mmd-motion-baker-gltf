@@ -22,6 +22,7 @@ export interface LandmarkData {
   frames: LandmarkFrame[];
   restLandmarks?: Record<string, [number, number, number]>;
   availableMorphs?: ModelMorphInfo[];
+  loopStartFrame?: number;
   loopMode?: 'overlap' | 'warp';
   loopBridgeFrames?: number;
   loopInPlace?: boolean;
@@ -29,4 +30,5 @@ export interface LandmarkData {
   bridgeContinuation?: LandmarkFrame[];
   /** 同相位接回轨 (Track B: S+1 .. S+B) */
   bridgeLeadIn?: LandmarkFrame[];
+
 }

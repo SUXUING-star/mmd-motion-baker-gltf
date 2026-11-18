@@ -218,13 +218,15 @@ function shiftFrameXZ(
 }
 
 /**
- * 同相位交叠融合（保持 1.000 完整周期长度，绝不切半拍破坏节奏）：
- * - 若 E 后方有足够真实延续帧 (E + B < rawTotal)：
- *   主体 = raw[S + B .. E]
- *   过渡 = Blend(TrackA: raw[E + 1 .. E + B], TrackB: raw[S + 1 .. S + B])
- *   其中 TrackA 与 TrackB 相位完全同步（均相对周期起点推进 1..B 帧），第 B 帧 100% 抵达 raw[S + B] === Frame[0]！
- * - 若 E 贴近视频结尾没有后续帧：
- *   保留 raw[S .. E]，启用 'warp' 模式在 mathSolver 内对首尾残差做加性分散校准。
+ * 同相位交叠融合（保留循环前的前导动作 0 .. S-1）：
+ * - 当 S > 0 且 E + B < rawTotal（Overlap 模式）：
+ *   保留 raw[0 .. E] 完整前导+首轮循环，并在尾部拼入 B 帧同相位过渡桥：
+ *   Blend(TrackA: raw[E + 1 .. E + B], TrackB: raw[S + 1 .. S + B])
+ *   末帧正好抵达 raw[S + B]，后续从 loopStartFrame = S + B 无缝循环。
+ * - 当 S === 0（无前导动作）且 E + B < rawTotal：
+ *   保留纯循环片段 [S + B .. E] + Bridge，loopStartFrame = 0，直接兼容首尾闭合 LoopRepeat。
+ * - 当 E 贴近结尾无延续帧（Warp 模式）：
+ *   保留 raw[0 .. E]，设置 loopStartFrame = S，交由 mathSolver 在 S 与 E 处做残差分散校准。
  */
 export function applyLoopSegmentToLandmarkData(
   landmarkData: LandmarkData,
@@ -239,57 +241,80 @@ export function applyLoopSegmentToLandmarkData(
   const safeEnd = Math.max(safeStart, Math.min(endFrameIndex, rawTotal - 1));
 
   const cycleSpan = safeEnd - safeStart;
-  if (cycleSpan < 6) return trimLandmarkData(landmarkData, safeStart, safeEnd);
+  if (cycleSpan < 6) return trimLandmarkData(landmarkData, 0, safeEnd);
 
   const fps = landmarkData.fps || 30;
-  // 融合帧数不超过半个周期
   const maxAllowedBlend = Math.max(2, Math.floor(cycleSpan * 0.45));
   const insertCount = Math.max(3, Math.min(maxAllowedBlend, Math.round(blendDuration * fps)));
 
   const canOverlapForward = safeEnd + insertCount < rawTotal;
+  const hasLeadIn = safeStart > 0;
 
   // =========================================================================
-  // 模式 1：同相位交叠继续动 (Phase-Aligned Overlap Crossfade)
+  // 模式 1：同相位交叠融合 (Phase-Aligned Overlap Crossfade)
   // =========================================================================
   if (canOverlapForward) {
-    const bodyStart = safeStart + insertCount;
-    const bodyFrames = allFrames.slice(bodyStart, safeEnd + 1);
-
-    // Track A: 从 E 继续往后动 (E + 1 .. E + B)
-    const bridgeContinuation: LandmarkFrame[] = allFrames
-      .slice(safeEnd + 1, safeEnd + 1 + insertCount)
-      .map((f) => ({
-        ...f,
-        previewTime: f.previewTime ?? f.time,
-        landmarks: { ...f.landmarks },
-      }));
-
-    // 计算周期前进位移，把 Track B 平移到与 Track A 相同的空间接续位置，避免过渡区倒着滑步
     const hStart = getHipsPos(allFrames[safeStart].landmarks);
     const hEnd = getHipsPos(allFrames[safeEnd].landmarks);
     const cycleDriftX = hEnd[0] - hStart[0];
     const cycleDriftZ = hEnd[2] - hStart[2];
+    const cycleLen = Math.max(1, cycleSpan);
 
-    // Track B: 同相位接回 (S + 1 .. S + B)，末帧 B 正好是 raw[S + B] === bodyFrames[0]
+    // 若存在前导动作 (safeStart > 0)，从 0 开始完整保留到 safeEnd；否则纯循环从 safeStart + insertCount 开始
+    const sliceStart = hasLeadIn ? 0 : safeStart + insertCount;
+    const loopStartFrame = hasLeadIn ? safeStart + insertCount : 0;
+
+    const resultFrames: LandmarkFrame[] = allFrames
+      .slice(sliceStart, safeEnd + 1)
+      .map((f, idx) => {
+        const rawIdx = sliceStart + idx;
+        let frame: LandmarkFrame = {
+          time: 0,
+          landmarks: { ...f.landmarks },
+          expressions: f.expressions ? { ...f.expressions } : undefined,
+          previewTime: f.previewTime ?? f.time,
+        };
+        if (inPlace && hasLeadIn && rawIdx > safeStart) {
+          const frac = (rawIdx - safeStart) / cycleLen;
+          frame = shiftFrameXZ(frame, -cycleDriftX * frac, -cycleDriftZ * frac);
+        }
+        return frame;
+      });
+
+    // Track A: 从 E 继续往后动 (E + 1 .. E + B)
+    const bridgeContinuation: LandmarkFrame[] = allFrames
+      .slice(safeEnd + 1, safeEnd + 1 + insertCount)
+      .map((f, k) => {
+        let frame: LandmarkFrame = {
+          ...f,
+          previewTime: f.previewTime ?? f.time,
+          landmarks: { ...f.landmarks },
+          expressions: f.expressions ? { ...f.expressions } : undefined,
+        };
+        if (inPlace && hasLeadIn) {
+          const frac = 1 + (k + 1) / cycleLen;
+          frame = shiftFrameXZ(frame, -cycleDriftX * frac, -cycleDriftZ * frac);
+        }
+        return frame;
+      });
+
+    // Track B: 同相位接回 (S + 1 .. S + B)
     const bridgeLeadIn: LandmarkFrame[] = allFrames
       .slice(safeStart + 1, safeStart + 1 + insertCount)
-      .map((f) =>
-        shiftFrameXZ(
-          {
-            ...f,
-            previewTime: f.previewTime ?? f.time,
-          },
-          cycleDriftX,
-          cycleDriftZ
-        )
-      );
-
-    const resultFrames: LandmarkFrame[] = bodyFrames.map((f) => ({
-      time: 0,
-      landmarks: { ...f.landmarks },
-      expressions: f.expressions ? { ...f.expressions } : undefined,
-      previewTime: f.previewTime ?? f.time,
-    }));
+      .map((f, k) => {
+        const base: LandmarkFrame = {
+          ...f,
+          previewTime: f.previewTime ?? f.time,
+          landmarks: { ...f.landmarks },
+          expressions: f.expressions ? { ...f.expressions } : undefined,
+        };
+        if (inPlace && hasLeadIn) {
+          // 与 resultFrames[safeStart + 1 + k] 保持完全一致的 XZ 偏移
+          const frac = (k + 1) / cycleLen;
+          return shiftFrameXZ(base, -cycleDriftX * frac, -cycleDriftZ * frac);
+        }
+        return shiftFrameXZ(base, cycleDriftX, cycleDriftZ);
+      });
 
     for (let k = 0; k < insertCount; k++) {
       const u = (k + 1) / insertCount;
@@ -335,8 +360,8 @@ export function applyLoopSegmentToLandmarkData(
     }
 
     const totalFrames = resultFrames.length;
-    // 若开启原地循环，从全部帧（含过渡轨）统一扣除线性 XZ 前进趋势，保留 100% 骨盆摇摆与 Y 起伏
-    if (inPlace && totalFrames > 1) {
+    // 无前导动作时，对 [0 .. totalFrames - 1] 统一扣除线性 XZ 前进斜坡
+    if (inPlace && !hasLeadIn && totalFrames > 1) {
       const firstH = getHipsPos(resultFrames[0].landmarks);
       const lastH = getHipsPos(resultFrames[totalFrames - 1].landmarks);
       const totalDriftX = lastH[0] - firstH[0];
@@ -362,6 +387,7 @@ export function applyLoopSegmentToLandmarkData(
       duration: resultFrames[totalFrames - 1].time,
       frames: resultFrames,
       loopMode: 'overlap',
+      loopStartFrame,
       loopBridgeFrames: insertCount,
       loopInPlace: inPlace,
       bridgeContinuation,
@@ -370,9 +396,9 @@ export function applyLoopSegmentToLandmarkData(
   }
 
   // =========================================================================
-  // 模式 2：结尾无后续帧兜底 —— 残差分散校准 (Unity Loop Pose Warp)
+  // 模式 2：结尾无后续帧兜底 —— 保留前导动作 + 残差分散校准 (Loop Pose Warp)
   // =========================================================================
-  const sliced = allFrames.slice(safeStart, safeEnd + 1);
+  const sliced = allFrames.slice(0, safeEnd + 1);
   const totalFrames = sliced.length;
   const resultFrames: LandmarkFrame[] = sliced.map((f, idx) => ({
     time: idx / fps,
@@ -381,14 +407,15 @@ export function applyLoopSegmentToLandmarkData(
     previewTime: f.previewTime ?? f.time,
   }));
 
-  if (inPlace && totalFrames > 1) {
-    const firstH = getHipsPos(resultFrames[0].landmarks);
-    const lastH = getHipsPos(resultFrames[totalFrames - 1].landmarks);
+  if (inPlace && safeEnd > safeStart) {
+    const firstH = getHipsPos(resultFrames[safeStart].landmarks);
+    const lastH = getHipsPos(resultFrames[safeEnd].landmarks);
     const totalDriftX = lastH[0] - firstH[0];
     const totalDriftZ = lastH[2] - firstH[2];
+    const span = safeEnd - safeStart;
 
-    for (let i = 0; i < totalFrames; i++) {
-      const frac = i / (totalFrames - 1);
+    for (let i = safeStart; i <= safeEnd; i++) {
+      const frac = (i - safeStart) / span;
       resultFrames[i] = shiftFrameXZ(
         resultFrames[i],
         -totalDriftX * frac,
@@ -403,6 +430,7 @@ export function applyLoopSegmentToLandmarkData(
     duration: resultFrames[totalFrames - 1].time,
     frames: resultFrames,
     loopMode: 'warp',
+    loopStartFrame: safeStart,
     loopBridgeFrames: insertCount,
     loopInPlace: inPlace,
     bridgeContinuation: undefined,
@@ -415,8 +443,9 @@ export function trimLandmarkData(
   startFrameIndex: number,
   endFrameIndex: number
 ): LandmarkData {
-  const safeStart = Math.max(0, Math.min(startFrameIndex, landmarkData.frames.length - 1));
-  const safeEnd = Math.max(safeStart, Math.min(endFrameIndex, landmarkData.frames.length - 1));
+  const rawTotal = landmarkData.frames.length;
+  const safeStart = Math.max(0, Math.min(startFrameIndex, rawTotal - 1));
+  const safeEnd = Math.max(safeStart, Math.min(endFrameIndex, rawTotal - 1));
 
   const slicedFrames = landmarkData.frames.slice(safeStart, safeEnd + 1);
   const fps = landmarkData.fps || 30;
@@ -430,12 +459,30 @@ export function trimLandmarkData(
   const totalFrames = normalizedFrames.length;
   const duration = totalFrames > 0 ? normalizedFrames[totalFrames - 1].time : 0;
 
+  // 若仅裁剪了前导段前面一部分且未切入循环体内部，保留循环元数据
+  const existingLoopStart = landmarkData.loopStartFrame ?? 0;
+  const keepLoopMetadata =
+    !!landmarkData.loopMode &&
+    safeEnd === rawTotal - 1 &&
+    safeStart <= existingLoopStart;
+
+  if (keepLoopMetadata) {
+    return {
+      ...landmarkData,
+      totalFrames,
+      duration,
+      frames: normalizedFrames,
+      loopStartFrame: existingLoopStart - safeStart,
+    };
+  }
+
   return {
     ...landmarkData,
     totalFrames,
     duration,
     frames: normalizedFrames,
     loopMode: undefined,
+    loopStartFrame: undefined,
     loopBridgeFrames: 0,
     bridgeContinuation: undefined,
     bridgeLeadIn: undefined,
