@@ -13,6 +13,7 @@ interface PrTimelineProps {
   exprState: ExpressionTracksController;
   vmdExpressionTracks: VmdExpressionTrackSummary[];
   getFrameVmdExpressions: (frame: number) => Record<string, number>;
+  onOpenContextMenu?: (e: React.MouseEvent, trackName: string) => void;
   isCameraMode?: boolean;
   disabled: boolean;
 }
@@ -25,11 +26,12 @@ export const PrTimeline: React.FC<PrTimelineProps> = ({
   exprState,
   vmdExpressionTracks,
   getFrameVmdExpressions,
+  onOpenContextMenu,
   isCameraMode,
   disabled,
 }) => {
   const { maxFrames, currentFrame, startFrame, endFrame, seek } = timeline;
-  const { activeName, activeTrack } = exprState;
+  const { activeName, activeTrack, tracks } = exprState;
 
   const trackAreaRef = useRef<HTMLDivElement>(null);
   const draggingRef = useRef(false);
@@ -44,6 +46,13 @@ export const PrTimeline: React.FC<PrTimelineProps> = ({
     seek(Math.round(ratio * totalSpan));
   };
 
+  const hasUserOverride = activeTrack.keyframes.length > 0;
+  const activeIsInVmd = useMemo(
+    () => vmdExpressionTracks.some((tr) => tr.name === activeName),
+    [vmdExpressionTracks, activeName]
+  );
+
+  // 用户关键帧曲线
   const curvePath = useMemo(() => {
     if (maxFrames <= 0 || activeTrack.keyframes.length === 0) return '';
     const step = Math.max(1, Math.floor(maxFrames / 220));
@@ -58,11 +67,59 @@ export const PrTimeline: React.FC<PrTimelineProps> = ({
     return pts.join(' ');
   }, [maxFrames, totalSpan, activeTrack]);
 
-  const activeVmdAtCurrent = useMemo(() => {
-    return Object.entries(getFrameVmdExpressions(currentFrame))
-      .filter(([, w]) => w > 0.01)
-      .sort((a, b) => b[1] - a[1]);
-  }, [getFrameVmdExpressions, currentFrame]);
+  // VMD 原生曲线（无覆盖时作为主曲线显示；有覆盖时作为虚线参考）
+  const vmdCurvePath = useMemo(() => {
+    if (maxFrames <= 0 || !activeIsInVmd) return '';
+    const step = Math.max(1, Math.floor(maxFrames / 220));
+    const pts: string[] = [];
+    for (let f = 0; f < maxFrames; f += step) {
+      const x = (f / totalSpan) * 1000;
+      const w = getFrameVmdExpressions(f)[activeName] ?? 0;
+      const y = 6 + (1 - Math.max(0, Math.min(1, w))) * 48;
+      pts.push(`${f === 0 ? 'M' : 'L'} ${x.toFixed(1)} ${y.toFixed(1)}`);
+    }
+    const lastW = getFrameVmdExpressions(maxFrames - 1)[activeName] ?? 0;
+    pts.push(`L 1000 ${(6 + (1 - Math.max(0, Math.min(1, lastW))) * 48).toFixed(1)}`);
+    return pts.join(' ');
+  }, [maxFrames, totalSpan, activeIsInVmd, activeName, getFrameVmdExpressions]);
+
+  // 当前帧真实有效权重列表（合并 VMD 原生与用户覆盖/置零）
+  const activeEffectiveAtCurrent = useMemo(() => {
+    const map = new Map<string, { weight: number; source: 'vmd' | 'user' }>();
+    const vmdMap = getFrameVmdExpressions(currentFrame);
+    for (const [name, w] of Object.entries(vmdMap)) {
+      if (w > 0.01) map.set(name, { weight: w, source: 'vmd' });
+    }
+    for (const tr of tracks) {
+      if (tr.keyframes.length === 0) continue;
+      const w = evaluateExpressionTrackAtFrame(tr, currentFrame);
+      if (w > 0.01) {
+        map.set(tr.name, { weight: w, source: 'user' });
+      } else {
+        map.delete(tr.name);
+      }
+    }
+    return Array.from(map.entries()).sort((a, b) => b[1].weight - a[1].weight);
+  }, [getFrameVmdExpressions, currentFrame, tracks]);
+
+  // 用户新增（不在 vmdExpressionTracks 中）但有关键帧的轨道
+  const extraEditedTracks = useMemo(() => {
+    const vmdSet = new Set(vmdExpressionTracks.map((tr) => tr.name));
+    return tracks.filter((tr) => tr.keyframes.length > 0 && !vmdSet.has(tr.name));
+  }, [vmdExpressionTracks, tracks]);
+
+  const trackOverrideMap = useMemo(() => {
+    const map = new Map<string, { overridden: boolean; muted: boolean; kfCount: number }>();
+    for (const tr of tracks) {
+      if (tr.keyframes.length === 0) continue;
+      map.set(tr.name, {
+        overridden: true,
+        muted: tr.keyframes.every((k) => k.value <= 1e-4),
+        kfCount: tr.keyframes.length,
+      });
+    }
+    return map;
+  }, [tracks]);
 
   const rulerTicks = useMemo(() => {
     if (maxFrames <= 1) return [0];
@@ -73,9 +130,16 @@ export const PrTimeline: React.FC<PrTimelineProps> = ({
     return ticks;
   }, [maxFrames, totalSpan]);
 
+  const handleContextMenu = (e: React.MouseEvent, trackName: string) => {
+    if (!onOpenContextMenu || isCameraMode) return;
+    e.preventDefault();
+    e.stopPropagation();
+    onOpenContextMenu(e, trackName);
+  };
+
   return (
     <>
-      {/* 仅动作模式显示：当前帧 VMD 原生激活表情 */}
+      {/* 仅动作模式显示：当前帧有效激活表情 */}
       {!isCameraMode && (
         <div
           style={{
@@ -91,27 +155,38 @@ export const PrTimeline: React.FC<PrTimelineProps> = ({
             flexWrap: 'wrap',
           }}
         >
-          <span style={{ fontWeight: 600, color: '#374151' }}>F{currentFrame} VMD:</span>
-          {activeVmdAtCurrent.length === 0 ? (
+          <span style={{ fontWeight: 600, color: '#374151' }}>F{currentFrame}:</span>
+          {activeEffectiveAtCurrent.length === 0 ? (
             <span style={{ color: '#9ca3af' }}>{t?.noActiveVmdMorph ?? 'No active VMD morph'}</span>
           ) : (
-            activeVmdAtCurrent.map(([name, w]) => (
+            activeEffectiveAtCurrent.map(([name, info]) => (
               <button
                 key={name}
                 type="button"
                 onClick={() => exprState.setActiveName(name)}
+                onContextMenu={(e) => handleContextMenu(e, name)}
                 style={{
                   padding: '1px 7px',
                   borderRadius: 999,
-                  border: activeName === name ? '1px solid #1677ff' : '1px solid #bae6fd',
-                  background: activeName === name ? '#dbeafe' : '#f0f9ff',
-                  color: '#0369a1',
+                  border:
+                    activeName === name
+                      ? '1px solid #1677ff'
+                      : info.source === 'user'
+                        ? '1px solid #34d399'
+                        : '1px solid #bae6fd',
+                  background:
+                    activeName === name
+                      ? '#dbeafe'
+                      : info.source === 'user'
+                        ? '#ecfdf5'
+                        : '#f0f9ff',
+                  color: info.source === 'user' ? '#047857' : '#0369a1',
                   fontSize: 11,
                   fontWeight: 600,
                   cursor: 'pointer',
                 }}
               >
-                {name}: {w.toFixed(2)}
+                {name}: {info.weight.toFixed(2)}
               </button>
             ))
           )}
@@ -121,7 +196,7 @@ export const PrTimeline: React.FC<PrTimelineProps> = ({
       {/* 时间轴 */}
       <div style={{ background: '#ffffff', border: '1px solid #d9d9d9', borderRadius: 6, overflow: 'hidden', userSelect: 'none' }}>
         <div style={{ display: 'flex' }}>
-          <div style={{ width: 124, flexShrink: 0, background: '#f5f5f5', borderRight: '1px solid #e5e7eb' }}>
+          <div style={{ width: 136, flexShrink: 0, background: '#f5f5f5', borderRight: '1px solid #e5e7eb' }}>
             <div style={{ height: 24, padding: '0 8px', fontSize: 11, fontWeight: 600, color: '#6b7280', display: 'flex', alignItems: 'center', borderBottom: '1px solid #e5e7eb' }}>
               Timeline
             </div>
@@ -142,6 +217,7 @@ export const PrTimeline: React.FC<PrTimelineProps> = ({
             ) : (
               <div
                 title={activeName}
+                onContextMenu={(e) => handleContextMenu(e, activeName)}
                 style={{
                   height: 60,
                   padding: '0 8px',
@@ -150,13 +226,29 @@ export const PrTimeline: React.FC<PrTimelineProps> = ({
                   color: '#1677ff',
                   display: 'flex',
                   alignItems: 'center',
+                  justifyContent: 'space-between',
+                  gap: 4,
                   borderBottom: '1px solid #e5e7eb',
                   overflow: 'hidden',
-                  textOverflow: 'ellipsis',
-                  whiteSpace: 'nowrap',
+                  cursor: 'context-menu',
                 }}
               >
-                {activeName}
+                <span style={{ overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+                  {activeName}
+                </span>
+                {trackOverrideMap.get(activeName)?.muted ? (
+                  <span style={{ fontSize: 9, padding: '1px 4px', borderRadius: 3, background: '#fee2e2', color: '#dc2626', flexShrink: 0 }}>
+                    0
+                  </span>
+                ) : hasUserOverride ? (
+                  <span style={{ fontSize: 9, padding: '1px 4px', borderRadius: 3, background: '#dcfce7', color: '#15803d', flexShrink: 0 }}>
+                    KF
+                  </span>
+                ) : activeIsInVmd ? (
+                  <span style={{ fontSize: 9, padding: '1px 4px', borderRadius: 3, background: '#e0f2fe', color: '#0369a1', flexShrink: 0 }}>
+                    VMD
+                  </span>
+                ) : null}
               </div>
             )}
           </div>
@@ -164,7 +256,7 @@ export const PrTimeline: React.FC<PrTimelineProps> = ({
           <div
             ref={trackAreaRef}
             onPointerDown={(e) => {
-              if (disabled) return;
+              if (disabled || e.button !== 0) return;
               draggingRef.current = true;
               e.currentTarget.setPointerCapture(e.pointerId);
               scrubByClientX(e.clientX);
@@ -272,15 +364,37 @@ export const PrTimeline: React.FC<PrTimelineProps> = ({
             {isCameraMode ? (
               <div style={{ height: 36, position: 'relative' }} />
             ) : (
-              <div style={{ height: 60, position: 'relative', borderBottom: '1px solid #e5e7eb' }}>
+              <div
+                onContextMenu={(e) => handleContextMenu(e, activeName)}
+                style={{ height: 60, position: 'relative', borderBottom: '1px solid #e5e7eb' }}
+              >
                 <svg viewBox="0 0 1000 60" preserveAspectRatio="none" style={{ width: '100%', height: '100%', display: 'block', pointerEvents: 'none' }}>
                   <line x1={0} y1={30} x2={1000} y2={30} stroke="#f3f4f6" strokeDasharray="4 4" />
-                  {curvePath && <path d={curvePath} fill="none" stroke="#1677ff" strokeWidth={2} vectorEffect="non-scaling-stroke" />}
+                  {vmdCurvePath && (
+                    <path
+                      d={vmdCurvePath}
+                      fill="none"
+                      stroke={hasUserOverride ? '#cbd5e1' : '#0ea5e9'}
+                      strokeWidth={hasUserOverride ? 1.5 : 2}
+                      strokeDasharray={hasUserOverride ? '4 3' : undefined}
+                      vectorEffect="non-scaling-stroke"
+                    />
+                  )}
+                  {curvePath && (
+                    <path
+                      d={curvePath}
+                      fill="none"
+                      stroke="#1677ff"
+                      strokeWidth={2}
+                      vectorEffect="non-scaling-stroke"
+                    />
+                  )}
                 </svg>
                 {activeTrack.keyframes.map((kf) => (
                   <div
                     key={kf.frame}
                     onPointerDown={(e) => {
+                      if (e.button !== 0) return;
                       e.stopPropagation();
                       seek(kf.frame);
                     }}
@@ -318,102 +432,197 @@ export const PrTimeline: React.FC<PrTimelineProps> = ({
           </div>
         </div>
 
-        {/* 仅动作模式显示：VMD 原生表情 PR 剪辑条轨道 */}
+        {/* 仅动作模式显示：VMD 原生表情 + 用户编辑轨道（支持右键快捷菜单） */}
         {!isCameraMode && (
-          <div style={{ maxHeight: 165, overflowY: 'auto' }}>
-            {vmdExpressionTracks.length === 0 ? (
+          <div style={{ maxHeight: 175, overflowY: 'auto' }}>
+            {vmdExpressionTracks.length === 0 && extraEditedTracks.length === 0 ? (
               <div style={{ padding: '8px 12px', fontSize: 11, color: '#9ca3af' }}>{t?.noVmdMorphTracks ?? 'No VMD facial morph tracks detected.'}</div>
             ) : (
-              vmdExpressionTracks.map((track, idx) => {
-                const color = TRACK_COLORS[idx % TRACK_COLORS.length];
-                const isSelected = activeName === track.name;
-                return (
-                  <div key={track.name} style={{ display: 'flex', borderBottom: '1px solid #f0f0f0' }}>
-                    <button
-                      type="button"
-                      onClick={() => exprState.setActiveName(track.name)}
-                      title={`${track.name} (max ${track.maxWeight.toFixed(2)}, ${track.totalActiveFrames} frames)`}
-                      style={{
-                        width: 124,
-                        flexShrink: 0,
-                        height: 26,
-                        padding: '0 8px',
-                        border: 'none',
-                        borderRight: '1px solid #e5e7eb',
-                        background: isSelected ? '#eff6ff' : '#f9fafb',
-                        color: isSelected ? '#1d4ed8' : '#374151',
-                        fontWeight: isSelected ? 700 : 500,
-                        fontSize: 11,
-                        textAlign: 'left',
-                        overflow: 'hidden',
-                        textOverflow: 'ellipsis',
-                        whiteSpace: 'nowrap',
-                        cursor: 'pointer',
-                      }}
-                    >
-                      {track.name}
-                    </button>
+              <>
+                {vmdExpressionTracks.map((track, idx) => {
+                  const color = TRACK_COLORS[idx % TRACK_COLORS.length];
+                  const isSelected = activeName === track.name;
+                  const ov = trackOverrideMap.get(track.name);
+                  const isMuted = !!ov?.muted;
+                  const isOverridden = !!ov?.overridden;
 
+                  return (
                     <div
-                      onClick={(e) => {
-                        const rect = e.currentTarget.getBoundingClientRect();
-                        const ratio = Math.max(0, Math.min(1, (e.clientX - rect.left) / Math.max(1, rect.width)));
-                        seek(Math.round(ratio * totalSpan));
+                      key={track.name}
+                      onContextMenu={(e) => handleContextMenu(e, track.name)}
+                      style={{
+                        display: 'flex',
+                        borderBottom: '1px solid #f0f0f0',
+                        opacity: isMuted ? 0.55 : 1,
                       }}
-                      style={{ flex: 1, position: 'relative', height: 26, background: isSelected ? '#f8fafc' : '#ffffff', cursor: 'pointer' }}
                     >
-                      <div
+                      <button
+                        type="button"
+                        onClick={() => exprState.setActiveName(track.name)}
+                        title={`${track.name} (max ${track.maxWeight.toFixed(2)}, ${track.totalActiveFrames} frames)`}
                         style={{
-                          position: 'absolute',
-                          top: 0,
-                          bottom: 0,
-                          left: pct(currentFrame),
-                          width: 1.5,
-                          background: 'rgba(239, 68, 68, 0.55)',
-                          pointerEvents: 'none',
-                          zIndex: 3,
+                          width: 136,
+                          flexShrink: 0,
+                          height: 26,
+                          padding: '0 8px',
+                          border: 'none',
+                          borderRight: '1px solid #e5e7eb',
+                          background: isSelected ? '#eff6ff' : '#f9fafb',
+                          color: isMuted ? '#9ca3af' : isSelected ? '#1d4ed8' : '#374151',
+                          fontWeight: isSelected ? 700 : 500,
+                          fontSize: 11,
+                          display: 'flex',
+                          alignItems: 'center',
+                          justifyContent: 'space-between',
+                          gap: 4,
+                          cursor: 'pointer',
                         }}
-                      />
-                      {track.clips.map((clip, cIdx) => {
-                        const spanPct = ((clip.endFrame - clip.startFrame) / totalSpan) * 100;
-                        return (
-                          <div
-                            key={cIdx}
-                            onClick={(e) => {
-                              e.stopPropagation();
-                              exprState.setActiveName(track.name);
-                              seek(clip.peakFrame);
-                            }}
-                            title={`${track.name}: F${clip.startFrame}–F${clip.endFrame} (Peak F${clip.peakFrame}: ${clip.peakWeight.toFixed(2)})`}
-                            style={{
-                              position: 'absolute',
-                              left: pct(clip.startFrame),
-                              width: `${spanPct}%`,
-                              minWidth: 5,
-                              top: 3,
-                              bottom: 3,
-                              borderRadius: 3,
-                              background: color,
-                              opacity: isSelected ? 1 : 0.8,
-                              color: '#ffffff',
-                              fontSize: 10,
-                              lineHeight: '20px',
-                              padding: '0 4px',
-                              overflow: 'hidden',
-                              whiteSpace: 'nowrap',
-                              boxSizing: 'border-box',
-                              cursor: 'pointer',
-                              zIndex: 2,
-                            }}
-                          >
-                            {spanPct > 6 ? `F${clip.startFrame}-${clip.endFrame} (${clip.peakWeight.toFixed(1)})` : ''}
-                          </div>
-                        );
-                      })}
+                      >
+                        <span
+                          style={{
+                            overflow: 'hidden',
+                            textOverflow: 'ellipsis',
+                            whiteSpace: 'nowrap',
+                            textDecoration: isMuted ? 'line-through' : 'none',
+                          }}
+                        >
+                          {track.name}
+                        </span>
+                        {isMuted ? (
+                          <span style={{ fontSize: 9, color: '#dc2626', fontWeight: 700, flexShrink: 0 }}>0</span>
+                        ) : isOverridden ? (
+                          <span style={{ fontSize: 9, color: '#15803d', fontWeight: 700, flexShrink: 0 }}>
+                            [{ov?.kfCount}]
+                          </span>
+                        ) : null}
+                      </button>
+
+                      <div
+                        onClick={(e) => {
+                          const rect = e.currentTarget.getBoundingClientRect();
+                          const ratio = Math.max(0, Math.min(1, (e.clientX - rect.left) / Math.max(1, rect.width)));
+                          exprState.setActiveName(track.name);
+                          seek(Math.round(ratio * totalSpan));
+                        }}
+                        style={{ flex: 1, position: 'relative', height: 26, background: isSelected ? '#f8fafc' : '#ffffff', cursor: 'pointer' }}
+                      >
+                        <div
+                          style={{
+                            position: 'absolute',
+                            top: 0,
+                            bottom: 0,
+                            left: pct(currentFrame),
+                            width: 1.5,
+                            background: 'rgba(239, 68, 68, 0.55)',
+                            pointerEvents: 'none',
+                            zIndex: 3,
+                          }}
+                        />
+                        {track.clips.map((clip, cIdx) => {
+                          const spanPct = ((clip.endFrame - clip.startFrame) / totalSpan) * 100;
+                          return (
+                            <div
+                              key={cIdx}
+                              onClick={(e) => {
+                                e.stopPropagation();
+                                exprState.setActiveName(track.name);
+                                seek(clip.peakFrame);
+                              }}
+                              title={`${track.name}: F${clip.startFrame}–F${clip.endFrame} (Peak F${clip.peakFrame}: ${clip.peakWeight.toFixed(2)})`}
+                              style={{
+                                position: 'absolute',
+                                left: pct(clip.startFrame),
+                                width: `${spanPct}%`,
+                                minWidth: 5,
+                                top: 3,
+                                bottom: 3,
+                                borderRadius: 3,
+                                background: isMuted ? '#cbd5e1' : color,
+                                opacity: isSelected ? 1 : 0.8,
+                                color: '#ffffff',
+                                fontSize: 10,
+                                lineHeight: '20px',
+                                padding: '0 4px',
+                                overflow: 'hidden',
+                                whiteSpace: 'nowrap',
+                                boxSizing: 'border-box',
+                                cursor: 'pointer',
+                                zIndex: 2,
+                              }}
+                            >
+                              {spanPct > 6 ? `F${clip.startFrame}-${clip.endFrame} (${clip.peakWeight.toFixed(1)})` : ''}
+                            </div>
+                          );
+                        })}
+                      </div>
                     </div>
-                  </div>
-                );
-              })
+                  );
+                })}
+
+                {extraEditedTracks.map((tr) => {
+                  const isSelected = activeName === tr.name;
+                  const firstF = tr.keyframes[0]?.frame ?? 0;
+                  const lastF = tr.keyframes[tr.keyframes.length - 1]?.frame ?? firstF;
+                  const spanPct = ((lastF - firstF) / totalSpan) * 100;
+                  return (
+                    <div
+                      key={tr.name}
+                      onContextMenu={(e) => handleContextMenu(e, tr.name)}
+                      style={{ display: 'flex', borderBottom: '1px solid #f0f0f0' }}
+                    >
+                      <button
+                        type="button"
+                        onClick={() => exprState.setActiveName(tr.name)}
+                        style={{
+                          width: 136,
+                          flexShrink: 0,
+                          height: 26,
+                          padding: '0 8px',
+                          border: 'none',
+                          borderRight: '1px solid #e5e7eb',
+                          background: isSelected ? '#eff6ff' : '#f0fdf4',
+                          color: isSelected ? '#1d4ed8' : '#047857',
+                          fontWeight: 600,
+                          fontSize: 11,
+                          display: 'flex',
+                          alignItems: 'center',
+                          justifyContent: 'space-between',
+                          gap: 4,
+                          cursor: 'pointer',
+                        }}
+                      >
+                        <span style={{ overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+                          {tr.name}
+                        </span>
+                        <span style={{ fontSize: 9, flexShrink: 0 }}>[{tr.keyframes.length}]</span>
+                      </button>
+                      <div
+                        onClick={(e) => {
+                          const rect = e.currentTarget.getBoundingClientRect();
+                          const ratio = Math.max(0, Math.min(1, (e.clientX - rect.left) / Math.max(1, rect.width)));
+                          exprState.setActiveName(tr.name);
+                          seek(Math.round(ratio * totalSpan));
+                        }}
+                        style={{ flex: 1, position: 'relative', height: 26, background: isSelected ? '#f8fafc' : '#ffffff', cursor: 'pointer' }}
+                      >
+                        <div
+                          style={{
+                            position: 'absolute',
+                            left: pct(firstF),
+                            width: `${spanPct}%`,
+                            minWidth: 6,
+                            top: 4,
+                            bottom: 4,
+                            borderRadius: 3,
+                            background: '#10b981',
+                            opacity: 0.75,
+                          }}
+                        />
+                      </div>
+                    </div>
+                  );
+                })}
+              </>
             )}
           </div>
         )}

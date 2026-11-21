@@ -1,8 +1,12 @@
 // src/components/ClipSection/index.tsx
-import React from 'react';
+import React, { useCallback, useState } from 'react';
 import type { ExpressionTracksController } from '../../hooks/useExpressionTracks';
 import type { MmdPipeline } from '../../hooks/useMmdPipeline';
 import type { I18nTexts } from '../../i18n';
+import {
+    ExpressionContextMenu,
+    ExpressionContextMenuState,
+} from './ExpressionContextMenu';
 import { ExpressionControls } from './ExpressionControls';
 import { LoopInspectorBar } from './LoopInspectorBar';
 import { PrTimeline } from './PrTimeline';
@@ -26,6 +30,17 @@ export const ClipSection: React.FC<ClipSectionProps> = ({ t, pipeline, exprState
     processing,
   } = pipeline;
 
+  const [menuState, setMenuState] = useState<ExpressionContextMenuState | null>(null);
+
+  const handleOpenContextMenu = useCallback((e: React.MouseEvent, trackName: string) => {
+    e.preventDefault();
+    setMenuState({
+      x: e.clientX,
+      y: e.clientY,
+      trackName,
+    });
+  }, []);
+
   if (timeline.maxFrames === 0) return null;
 
   const isCameraMode = bakeTargetType === 'camera';
@@ -46,6 +61,7 @@ export const ClipSection: React.FC<ClipSectionProps> = ({ t, pipeline, exprState
         exprState={exprState}
         vmdExpressionTracks={vmdExpressionTracks}
         getFrameVmdExpressions={getFrameVmdExpressions}
+        onOpenContextMenu={handleOpenContextMenu}
         isCameraMode={isCameraMode}
         disabled={processing}
       />
@@ -65,6 +81,25 @@ export const ClipSection: React.FC<ClipSectionProps> = ({ t, pipeline, exprState
           exprState={exprState}
           availableMorphs={availableMorphs}
           vmdExpressionTracks={vmdExpressionTracks}
+          getFrameVmdExpressions={getFrameVmdExpressions}
+          onOpenContextMenu={handleOpenContextMenu}
+          disabled={processing}
+        />
+      )}
+      {!isCameraMode && (
+        <ExpressionContextMenu
+          t={t}
+          menuState={menuState}
+          onClose={() => setMenuState(null)}
+          currentFrame={timeline.currentFrame}
+          maxFrames={timeline.maxFrames}
+          startFrame={timeline.startFrame}
+          endFrame={timeline.endFrame}
+          fps={timeline.fps}
+          exprState={exprState}
+          availableMorphs={availableMorphs}
+          vmdExpressionTracks={vmdExpressionTracks}
+          getFrameVmdExpressions={getFrameVmdExpressions}
           disabled={processing}
         />
       )}

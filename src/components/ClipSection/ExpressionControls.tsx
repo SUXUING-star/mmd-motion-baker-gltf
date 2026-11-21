@@ -1,3 +1,4 @@
+// src/components/ClipSection/ExpressionControls.tsx
 import React, { useMemo, useState } from 'react';
 import { ExpressionTracksController } from '../../hooks/useExpressionTracks';
 import { TimelineController } from '../../hooks/useMmdPipeline';
@@ -13,6 +14,8 @@ interface ExpressionControlsProps {
   exprState: ExpressionTracksController;
   availableMorphs: ModelMorphInfo[];
   vmdExpressionTracks: VmdExpressionTrackSummary[];
+  getFrameVmdExpressions: (frame: number) => Record<string, number>;
+  onOpenContextMenu?: (e: React.MouseEvent, trackName: string) => void;
   disabled: boolean;
 }
 
@@ -22,10 +25,12 @@ export const ExpressionControls: React.FC<ExpressionControlsProps> = ({
   exprState,
   availableMorphs,
   vmdExpressionTracks,
+  getFrameVmdExpressions,
+  onOpenContextMenu,
   disabled,
 }) => {
   const [customInput, setCustomInput] = useState('');
-  const { currentFrame, startFrame, endFrame, seek } = timeline;
+  const { currentFrame, startFrame, endFrame, maxFrames, seek } = timeline;
   const { activeName, activeTrack, tracks, customTrackNames } = exprState;
 
   const { presetRawNamesMap, modelCustomNames } = useMemo(() => {
@@ -45,15 +50,66 @@ export const ExpressionControls: React.FC<ExpressionControlsProps> = ({
 
   const vmdActiveSet = useMemo(() => new Set(vmdExpressionTracks.map((tr) => tr.name)), [vmdExpressionTracks]);
 
-  const trackCountMap = useMemo(() => {
-    const map = new Map<string, number>();
-    tracks.forEach((tr) => map.set(tr.name, tr.keyframes.length));
+  const trackStateMap = useMemo(() => {
+    const map = new Map<string, { count: number; muted: boolean }>();
+    tracks.forEach((tr) => {
+      if (tr.keyframes.length === 0) return;
+      map.set(tr.name, {
+        count: tr.keyframes.length,
+        muted: tr.keyframes.every((k) => k.value <= 1e-4),
+      });
+    });
     return map;
   }, [tracks]);
 
-  const currentValue = useMemo(() => evaluateExpressionTrackAtFrame(activeTrack, currentFrame), [activeTrack, currentFrame]);
-  const hasKf = useMemo(() => activeTrack.keyframes.some((k) => k.frame === currentFrame), [activeTrack, currentFrame]);
-  const extraUserTracks = useMemo(() => customTrackNames.filter((n) => !modelCustomNames.includes(n)), [customTrackNames, modelCustomNames]);
+  const hasUserOverride = activeTrack.keyframes.length > 0;
+  const isMuted = hasUserOverride && activeTrack.keyframes.every((k) => k.value <= 1e-4);
+  const isVmdTrack = vmdActiveSet.has(activeName);
+
+  const vmdValueAtCurrent = useMemo(
+    () => getFrameVmdExpressions(currentFrame)[activeName] ?? 0,
+    [getFrameVmdExpressions, currentFrame, activeName]
+  );
+
+  // 核心修复：未手动覆盖时，显示 VMD 原生当前帧权重；有用户覆盖时，显示关键帧插值结果
+  const currentValue = useMemo(() => {
+    if (hasUserOverride) {
+      return evaluateExpressionTrackAtFrame(activeTrack, currentFrame);
+    }
+    return vmdValueAtCurrent;
+  }, [hasUserOverride, activeTrack, currentFrame, vmdValueAtCurrent]);
+
+  const hasKf = useMemo(
+    () => activeTrack.keyframes.some((k) => k.frame === currentFrame),
+    [activeTrack, currentFrame]
+  );
+
+  const extraCustomNames = useMemo(() => {
+    const presetSet = new Set<string>(VRM_PRESET_EXPRESSIONS as readonly string[]);
+    const known = new Set<string>([...modelCustomNames]);
+    const list = [...modelCustomNames];
+    for (const n of customTrackNames) {
+      if (!known.has(n) && !presetSet.has(n)) {
+        known.add(n);
+        list.push(n);
+      }
+    }
+    for (const tr of vmdExpressionTracks) {
+      if (!known.has(tr.name) && !presetSet.has(tr.name)) {
+        known.add(tr.name);
+        list.push(tr.name);
+      }
+    }
+    return list;
+  }, [modelCustomNames, customTrackNames, vmdExpressionTracks]);
+
+  // 编辑单帧权重：如果是尚未覆盖的 VMD 原生轨，先提取其曲线再修改当前帧，防止丢失其余帧口型/表情
+  const handleEditFrameValue = (val: number) => {
+    if (!hasUserOverride && isVmdTrack) {
+      exprState.extractVmdTrack(activeName, maxFrames, (f) => getFrameVmdExpressions(f)[activeName] ?? 0);
+    }
+    exprState.upsertKeyframe(activeName, currentFrame, val);
+  };
 
   const handleAddCustom = () => {
     if (!customInput.trim()) return;
@@ -61,13 +117,44 @@ export const ExpressionControls: React.FC<ExpressionControlsProps> = ({
     setCustomInput('');
   };
 
+  const handlePillContextMenu = (e: React.MouseEvent, name: string) => {
+    if (!onOpenContextMenu) return;
+    e.preventDefault();
+    onOpenContextMenu(e, name);
+  };
+
   return (
     <div style={{ marginTop: 12, paddingTop: 12, borderTop: '1px solid #e5e7eb' }}>
       {/* 当前帧权重滑块与插值操作 */}
       <div style={{ display: 'flex', flexWrap: 'wrap', alignItems: 'center', justifyContent: 'space-between', gap: 12, background: '#ffffff', padding: 10, borderRadius: 8, border: '1px solid #e5e7eb' }}>
-        <div style={{ display: 'flex', alignItems: 'center', gap: 10, flex: '1 1 320px' }}>
+        <div style={{ display: 'flex', alignItems: 'center', gap: 10, flex: '1 1 340px' }}>
           <span style={{ fontSize: 13, fontWeight: 600, color: '#111827', minWidth: 92 }}>
             {t.exprFrameValueLabel(currentFrame)}
+          </span>
+          <span
+            style={{
+              fontSize: 10,
+              fontWeight: 700,
+              padding: '2px 6px',
+              borderRadius: 4,
+              flexShrink: 0,
+              background: isMuted
+                ? '#fee2e2'
+                : hasUserOverride
+                  ? '#dcfce7'
+                  : isVmdTrack
+                    ? '#e0f2fe'
+                    : '#f3f4f6',
+              color: isMuted
+                ? '#b91c1c'
+                : hasUserOverride
+                  ? '#15803d'
+                  : isVmdTrack
+                    ? '#0369a1'
+                    : '#6b7280',
+            }}
+          >
+            {isMuted ? '0' : hasUserOverride ? 'KF' : isVmdTrack ? 'VMD' : '-'}
           </span>
           <input
             type="range"
@@ -76,7 +163,7 @@ export const ExpressionControls: React.FC<ExpressionControlsProps> = ({
             step={0.01}
             disabled={disabled}
             value={currentValue}
-            onChange={(e) => exprState.upsertKeyframe(activeName, currentFrame, Number(e.target.value))}
+            onChange={(e) => handleEditFrameValue(Number(e.target.value))}
             style={{ flex: 1, cursor: disabled ? 'not-allowed' : 'pointer' }}
           />
           <span style={{ fontSize: 13, fontFamily: 'monospace', fontWeight: 700, color: '#1677ff', minWidth: 38 }}>
@@ -87,7 +174,7 @@ export const ExpressionControls: React.FC<ExpressionControlsProps> = ({
               key={v}
               type="button"
               disabled={disabled}
-              onClick={() => exprState.upsertKeyframe(activeName, currentFrame, v)}
+              onClick={() => handleEditFrameValue(v)}
               style={{ padding: '3px 7px', fontSize: 11, borderRadius: 4, border: '1px solid #d1d5db', background: '#f9fafb', cursor: disabled ? 'not-allowed' : 'pointer' }}
             >
               {v}
@@ -118,7 +205,7 @@ export const ExpressionControls: React.FC<ExpressionControlsProps> = ({
           <button
             type="button"
             disabled={disabled}
-            onClick={() => exprState.applyConstantRange(activeName, startFrame, endFrame, currentValue || 1)}
+            onClick={() => exprState.applyConstantRange(activeName, startFrame, endFrame, currentValue > 0 ? currentValue : 1)}
             style={{ padding: '4px 10px', fontSize: 12, borderRadius: 6, border: '1px solid #d1d5db', background: '#ffffff', cursor: disabled ? 'not-allowed' : 'pointer' }}
           >
             {t.exprFillRangeBtn}
@@ -134,10 +221,12 @@ export const ExpressionControls: React.FC<ExpressionControlsProps> = ({
         </div>
       </div>
 
-      {/* VRM 预设表情 */}
+      {/* VRM 预设表情（支持右键菜单） */}
       <div style={{ display: 'flex', flexWrap: 'wrap', gap: 6, marginTop: 10 }}>
         {VRM_PRESET_EXPRESSIONS.map((name) => {
-          const kfCount = trackCountMap.get(name) || 0;
+          const st = trackStateMap.get(name);
+          const kfCount = st?.count || 0;
+          const muted = !!st?.muted;
           const hasVmd = vmdActiveSet.has(name);
           const isSelected = activeName === name;
           const rawMatches = presetRawNamesMap.get(name);
@@ -150,32 +239,60 @@ export const ExpressionControls: React.FC<ExpressionControlsProps> = ({
               type="button"
               disabled={disabled}
               onClick={() => exprState.setActiveName(name)}
+              onContextMenu={(e) => handlePillContextMenu(e, name)}
               title={exists ? `${label} -> ${rawMatches.join(', ')}` : label}
               style={{
                 padding: '4px 10px',
                 borderRadius: 999,
                 fontSize: 12,
                 cursor: disabled ? 'not-allowed' : 'pointer',
-                border: isSelected ? '1px solid #1677ff' : kfCount > 0 ? '1px solid #34d399' : hasVmd ? '1px solid #38bdf8' : '1px solid #d1d5db',
-                background: isSelected ? '#1677ff' : kfCount > 0 ? '#ecfdf5' : exists ? '#ffffff' : '#f3f4f6',
-                color: isSelected ? '#ffffff' : kfCount > 0 ? '#065f46' : exists ? '#111827' : '#9ca3af',
+                border: isSelected
+                  ? '1px solid #1677ff'
+                  : muted
+                    ? '1px solid #fca5a5'
+                    : kfCount > 0
+                      ? '1px solid #34d399'
+                      : hasVmd
+                        ? '1px solid #38bdf8'
+                        : '1px solid #d1d5db',
+                background: isSelected
+                  ? '#1677ff'
+                  : muted
+                    ? '#fef2f2'
+                    : kfCount > 0
+                      ? '#ecfdf5'
+                      : exists
+                        ? '#ffffff'
+                        : '#f3f4f6',
+                color: isSelected
+                  ? '#ffffff'
+                  : muted
+                    ? '#b91c1c'
+                    : kfCount > 0
+                      ? '#065f46'
+                      : exists
+                        ? '#111827'
+                        : '#9ca3af',
                 fontWeight: isSelected || kfCount > 0 || hasVmd ? 600 : 400,
+                textDecoration: muted && !isSelected ? 'line-through' : 'none',
               }}
             >
-              {hasVmd && !isSelected ? '● ' : ''}
+              {hasVmd && !isSelected && !muted ? '● ' : ''}
               {label}
               {exists ? ` (${rawMatches[0]})` : ''}
-              {kfCount > 0 ? ` [${kfCount}]` : ''}
+              {kfCount > 0 ? ` [${muted ? '0' : kfCount}]` : ''}
             </button>
           );
         })}
       </div>
 
-      {/* 模型专属自定义 Morph */}
-      {(modelCustomNames.length > 0 || extraUserTracks.length > 0) && (
+      {/* 模型专属 & VMD 自定义 Morph（支持右键菜单） */}
+      {extraCustomNames.length > 0 && (
         <div style={{ marginTop: 8, display: 'flex', flexWrap: 'wrap', gap: 6, maxHeight: 96, overflowY: 'auto', padding: 8, background: '#ffffff', borderRadius: 8, border: '1px solid #e5e7eb' }}>
-          {[...modelCustomNames, ...extraUserTracks].map((name) => {
-            const kfCount = trackCountMap.get(name) || 0;
+          {extraCustomNames.map((name) => {
+            const st = trackStateMap.get(name);
+            const kfCount = st?.count || 0;
+            const muted = !!st?.muted;
             const hasVmd = vmdActiveSet.has(name);
             const isSelected = activeName === name;
             return (
@@ -184,20 +301,30 @@ export const ExpressionControls: React.FC<ExpressionControlsProps> = ({
                 type="button"
                 disabled={disabled}
                 onClick={() => exprState.setActiveName(name)}
+                onContextMenu={(e) => handlePillContextMenu(e, name)}
                 style={{
                   padding: '3px 9px',
                   borderRadius: 999,
                   fontSize: 11,
                   cursor: disabled ? 'not-allowed' : 'pointer',
-                  border: isSelected ? '1px solid #1677ff' : kfCount > 0 ? '1px solid #34d399' : hasVmd ? '1px solid #38bdf8' : '1px solid #d1d5db',
-                  background: isSelected ? '#1677ff' : kfCount > 0 ? '#ecfdf5' : '#f9fafb',
-                  color: isSelected ? '#ffffff' : kfCount > 0 ? '#065f46' : '#374151',
+                  border: isSelected
+                    ? '1px solid #1677ff'
+                    : muted
+                      ? '1px solid #fca5a5'
+                      : kfCount > 0
+                        ? '1px solid #34d399'
+                        : hasVmd
+                          ? '1px solid #38bdf8'
+                          : '1px solid #d1d5db',
+                  background: isSelected ? '#1677ff' : muted ? '#fef2f2' : kfCount > 0 ? '#ecfdf5' : '#f9fafb',
+                  color: isSelected ? '#ffffff' : muted ? '#b91c1c' : kfCount > 0 ? '#065f46' : '#374151',
                   fontWeight: isSelected || kfCount > 0 || hasVmd ? 600 : 400,
+                  textDecoration: muted && !isSelected ? 'line-through' : 'none',
                 }}
               >
-                {hasVmd && !isSelected ? '● ' : ''}
+                {hasVmd && !isSelected && !muted ? '● ' : ''}
                 {name}
-                {kfCount > 0 ? ` [${kfCount}]` : ''}
+                {kfCount > 0 ? ` [${muted ? '0' : kfCount}]` : ''}
               </button>
             );
           })}
@@ -205,7 +332,7 @@ export const ExpressionControls: React.FC<ExpressionControlsProps> = ({
       )}
 
       {/* 手动追加自定义表情名 & 当前轨道关键帧胶囊 */}
-      <div style={{ display: 'flex', flexWrap: 'wrap', gap: 6, alignItems: 'center', marginTop: 8 }}>
+      <div style={{ display: 'flex', flexWrap: 'wrap', gap: 6, alignItems: 'center', marginTop: 8, maxHeight: 110, overflowY: 'auto' }}>
         <input
           type="text"
           value={customInput}
