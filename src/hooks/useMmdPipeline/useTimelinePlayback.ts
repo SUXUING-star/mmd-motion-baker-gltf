@@ -143,13 +143,11 @@ export function useTimelinePlayback(
         const start = startFrameRef.current;
         const end = endFrameRef.current;
         const loopRestart = loopRestartFrameRef.current;
-        const restartTarget =
-          loopRestart !== null && loopRestart >= start && loopRestart < end
-            ? loopRestart
-            : start;
+        const isBakedLoop = loopRestart !== null && loopRestart >= start && loopRestart < end;
+        const restartTarget = isBakedLoop ? loopRestart : start;
 
         let next = currentFrameRef.current + 1;
-        if (next > end) {
+        if (isBakedLoop ? next >= end : next > end) {
           next = restartTarget;
         } else if (next < start) {
           next = start;
