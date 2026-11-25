@@ -8,6 +8,11 @@ interface DropZoneSectionProps {
   pipeline: MmdPipeline;
 }
 
+const SUPPORTED_MOTION_EXTS = ['.vmd', '.fbx', '.npy', '.bvh', '.anim', '.json'];
+
+const isSupportedMotionFile = (name: string) =>
+  SUPPORTED_MOTION_EXTS.some((ext) => name.toLowerCase().endsWith(ext));
+
 function readDirectoryEntries(dirReader: any): Promise<any[]> {
   return new Promise((resolve) => {
     const entries: any[] = [];
@@ -124,7 +129,11 @@ export const DropZoneSection: React.FC<DropZoneSectionProps> = ({ t, pipeline })
   const handleVmdFileChange = (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0];
     if (file) {
-      if (file.name.toLowerCase().endsWith('.vmd')) {
+      const ok =
+        bakeTargetType === 'camera'
+          ? file.name.toLowerCase().endsWith('.vmd')
+          : isSupportedMotionFile(file.name);
+      if (ok) {
         selectVmd(file);
       } else {
         alert(t.vmdAlert);
@@ -152,9 +161,13 @@ export const DropZoneSection: React.FC<DropZoneSectionProps> = ({ t, pipeline })
     if (processing) return;
 
     const files = await scanFilesFromDataTransfer(e.dataTransfer);
-    const vmd = files.find((f) => f.name.toLowerCase().endsWith('.vmd'));
-    if (vmd) {
-      selectVmd(vmd);
+    const motion = files.find((f) =>
+      bakeTargetType === 'camera'
+        ? f.name.toLowerCase().endsWith('.vmd')
+        : isSupportedMotionFile(f.name)
+    );
+    if (motion) {
+      selectVmd(motion);
     } else {
       alert(t.vmdNotFoundAlert);
     }
@@ -202,7 +215,7 @@ export const DropZoneSection: React.FC<DropZoneSectionProps> = ({ t, pipeline })
         </button>
       </div>
 
-      {/* PMX 模型直接嵌入区域 */}
+      {/* PMX 模型嵌入区域 */}
       <div>
         <div style={{ fontSize: 12, fontWeight: 600, color: '#374151', marginBottom: 6 }}>
           {t.baseModel}
@@ -298,7 +311,7 @@ export const DropZoneSection: React.FC<DropZoneSectionProps> = ({ t, pipeline })
         </div>
       </div>
 
-      {/* VMD 动画直接嵌入区域 */}
+      {/* 动作/镜头动画文件嵌入区域 */}
       <div>
         <div style={{ fontSize: 12, fontWeight: 600, color: '#374151', marginBottom: 6 }}>
           {bakeTargetType === 'motion' ? t.vmdMotionTitle : t.vmdCameraTitle}
@@ -306,7 +319,7 @@ export const DropZoneSection: React.FC<DropZoneSectionProps> = ({ t, pipeline })
         <input
           ref={vmdInputRef}
           type="file"
-          accept=".vmd"
+          accept={bakeTargetType === 'camera' ? '.vmd' : '.vmd,.fbx,.npy,.bvh,.anim,.json'}
           onChange={handleVmdFileChange}
           style={{ display: 'none' }}
         />

@@ -1,3 +1,4 @@
+// src/hooks/useMmdPipeline/useMmdBaker.ts
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import * as THREE from 'three';
 import { I18nTexts } from '../../i18n';
@@ -5,6 +6,7 @@ import { CameraAnimationData } from '../../solvers/cameraSolver';
 import { LandmarkData, ModelMorphInfo } from '../../types/types';
 import { bakePure3DLandmarks, BakerResult, loadPmxMeshOnly } from '../../utils/baker';
 import { bakeCameraVmd } from '../../utils/cameraBaker';
+import { bakePointCloudMotion, isVmdFilename } from '../../utils/pointCloudBaker';
 import {
     analyzeVmdExpressions,
     VmdExpressionTrackSummary,
@@ -85,24 +87,34 @@ export function useMmdBaker({
   const bakeMotionRaw = useCallback(
     async (
       pmxTarget: File | string,
-      vmdTarget: File | string,
+      motionTarget: File | string,
       extraFiles: File[]
-    ): Promise<BakerResult> => {
+    ): Promise<Pick<BakerResult, 'landmarkData' | 'mesh'> & { animation?: THREE.AnimationClip }> => {
       try {
         setProcessing(true);
         clearBakeData();
         threeBridge.setMmdCamera();
         threeBridge.clearCurrentMesh();
 
-        const result = await bakePure3DLandmarks(
-          pmxTarget,
-          vmdTarget,
-          (mesh, landmarks, prog) => {
-            setProgress(prog);
-            threeBridge.updateLandmarks(mesh, landmarks);
-          },
-          extraFiles
-        );
+        const result = isVmdFilename(motionTarget)
+          ? await bakePure3DLandmarks(
+              pmxTarget,
+              motionTarget,
+              (mesh, landmarks, prog) => {
+                setProgress(prog);
+                threeBridge.updateLandmarks(mesh, landmarks);
+              },
+              extraFiles
+            )
+          : await bakePointCloudMotion(
+              pmxTarget,
+              motionTarget,
+              (mesh, landmarks, prog) => {
+                setProgress(prog);
+                threeBridge.updateLandmarks(mesh, landmarks);
+              },
+              extraFiles
+            );
 
         rawLandmarkDataRef.current = result.landmarkData;
         setAvailableMorphs(result.landmarkData.availableMorphs || []);
