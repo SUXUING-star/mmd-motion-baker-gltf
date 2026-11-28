@@ -456,7 +456,7 @@ function parseNpyBuffer(buffer: ArrayBuffer): { shape: number[]; data: Float32Ar
   const dataOffset = offset + headerLen;
 
   const descr = headerStr.match(/'descr'\s*:\s*'([^']+)'/)?.[1];
-  const fortranOrder = headerStr.match(/'fortran_order'\s*:\s*(True|False)/)?.[1] === 'True';
+  // const fortranOrder = headerStr.match(/'fortran_order'\s*:\s*(True|False)/)?.[1] === 'True';
   const shape = headerStr
     .match(/'shape'\s*:\s*\(([^)]*)\)/)?.[1]
     .split(',')
