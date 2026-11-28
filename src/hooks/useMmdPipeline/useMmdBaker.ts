@@ -40,7 +40,7 @@ interface UseMmdBakerParams {
   meshPreviewRef: MutableRefObject<PreviewMeshRefState>;
   files: {
     activePmxTarget: File | string;
-    activeVmdTarget: File | string;
+    activeVmdTarget: File | File[] | string;
     vmdFile: File | null;
     customExtraFiles: File[];
     changeVersion: number;
@@ -100,7 +100,7 @@ export function useMmdBaker({
   const bakeMotionRaw = useCallback(
     async (
       pmxTarget: File | string,
-      motionTarget: File | string,
+      motionTarget: File | File[] | string,
       extraFiles: File[]
     ): Promise<Pick<BakerResult, 'landmarkData' | 'mesh'> & { animation?: THREE.AnimationClip }> => {
       try {
@@ -199,7 +199,7 @@ export function useMmdBaker({
   );
 
   const runBakeMotion = useCallback(
-    async (pmxTarget: File | string, vmdTarget: File | string, extraFiles: File[]) => {
+    async (pmxTarget: File | string, vmdTarget: File | File[] | string, extraFiles: File[]) => {
       try {
         resetTimeline();
         setSessionVersion((v) => v + 1);

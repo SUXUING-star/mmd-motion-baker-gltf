@@ -979,18 +979,27 @@ function parseJsonPointCloud(text: string): {
  * 统一对外入口
  * ============================================================================ */
 
-export function isVmdFilename(input: File | string): boolean {
+export function isVmdFilename(input: File | File[] | string): boolean {
+  if (Array.isArray(input)) {
+    return input.length > 0 && input.every((f) => f.name.toLowerCase().endsWith('.vmd'));
+  }
   const name = typeof input === 'string' ? input : input.name;
   return name.toLowerCase().endsWith('.vmd');
 }
 
 export async function bakePointCloudMotion(
   pmxInput: File | string,
-  motionInput: File | string,
+  motionInput: File | File[] | string,
   onFrameRender?: BakerRenderCallback,
   extraFiles?: File[]
 ): Promise<PointCloudBakerResult> {
-  const filename = (typeof motionInput === 'string' ? motionInput : motionInput.name).toLowerCase();
+  // 如果传入的是数组（例如误拖入多个点云文件），取第一个有效文件
+  const targetFile = Array.isArray(motionInput) ? motionInput[0] : motionInput;
+  if (!targetFile) {
+    throw new Error('未提供有效的动作文件');
+  }
+
+  const filename = (typeof targetFile === 'string' ? targetFile : targetFile.name).toLowerCase();
 
   let parsed: {
     frames: LandmarkFrame[];
@@ -1000,33 +1009,33 @@ export async function bakePointCloudMotion(
 
   if (filename.endsWith('.fbx')) {
     const buf =
-      typeof motionInput === 'string'
-        ? await (await fetch(motionInput)).arrayBuffer()
-        : await motionInput.arrayBuffer();
+      typeof targetFile === 'string'
+        ? await (await fetch(targetFile)).arrayBuffer()
+        : await targetFile.arrayBuffer();
     parsed = await parseFbxToFrames(buf);
   } else if (filename.endsWith('.npy')) {
     const buf =
-      typeof motionInput === 'string'
-        ? await (await fetch(motionInput)).arrayBuffer()
-        : await motionInput.arrayBuffer();
+      typeof targetFile === 'string'
+        ? await (await fetch(targetFile)).arrayBuffer()
+        : await targetFile.arrayBuffer();
     parsed = parseNpyToFrames(buf);
   } else if (filename.endsWith('.bvh')) {
     const txt =
-      typeof motionInput === 'string'
-        ? await (await fetch(motionInput)).text()
-        : await motionInput.text();
+      typeof targetFile === 'string'
+        ? await (await fetch(targetFile)).text()
+        : await targetFile.text();
     parsed = parseBvhToFrames(txt);
   } else if (filename.endsWith('.anim')) {
     const txt =
-      typeof motionInput === 'string'
-        ? await (await fetch(motionInput)).text()
-        : await motionInput.text();
+      typeof targetFile === 'string'
+        ? await (await fetch(targetFile)).text()
+        : await targetFile.text();
     parsed = parseUnityAnimYaml(txt);
   } else if (filename.endsWith('.json')) {
     const txt =
-      typeof motionInput === 'string'
-        ? await (await fetch(motionInput)).text()
-        : await motionInput.text();
+      typeof targetFile === 'string'
+        ? await (await fetch(targetFile)).text()
+        : await targetFile.text();
     parsed = parseJsonPointCloud(txt);
   } else {
     throw new Error(`不支持的动作文件格式: ${filename}`);

@@ -2,6 +2,7 @@
 import React, { useRef } from 'react';
 import { MmdPipeline } from '../hooks/useMmdPipeline';
 import { I18nTexts } from '../i18n';
+import type { VmdTrackRole } from '../utils/vmdMerger';
 
 interface DropZoneSectionProps {
   t: I18nTexts;
@@ -12,6 +13,16 @@ const SUPPORTED_MOTION_EXTS = ['.vmd', '.fbx', '.npy', '.bvh', '.anim', '.json']
 
 const isSupportedMotionFile = (name: string) =>
   SUPPORTED_MOTION_EXTS.some((ext) => name.toLowerCase().endsWith(ext));
+
+const ROLE_BADGE_STYLE: Record<VmdTrackRole, { bg: string; color: string; border: string }> = {
+  motion: { bg: '#eff6ff', color: '#1d4ed8', border: '#bfdbfe' },
+  motion_face: { bg: '#eef2ff', color: '#4338ca', border: '#c7d2fe' },
+  face: { bg: '#f5f3ff', color: '#6d28d9', border: '#ddd6fe' },
+  lip: { bg: '#fff1f2', color: '#be123c', border: '#fecdd3' },
+  face_lip: { bg: '#fdf4ff', color: '#a21caf', border: '#f5d0fe' },
+  camera: { bg: '#fffbeb', color: '#b45309', border: '#fde68a' },
+  empty: { bg: '#f3f4f6', color: '#6b7280', border: '#e5e7eb' },
+};
 
 function readDirectoryEntries(dirReader: any): Promise<any[]> {
   return new Promise((resolve) => {
@@ -87,8 +98,12 @@ export const DropZoneSection: React.FC<DropZoneSectionProps> = ({ t, pipeline })
     setBakeTargetType,
     customPmxFile,
     vmdFile,
+    vmdEntries,
+    skippedCameraNames,
     selectPmx,
-    selectVmd,
+    selectMotionFiles,
+    removeVmdEntry,
+    clearVmdFiles,
     resetPmx,
     processing,
   } = pipeline;
@@ -96,6 +111,7 @@ export const DropZoneSection: React.FC<DropZoneSectionProps> = ({ t, pipeline })
   const pmxInputRef = useRef<HTMLInputElement>(null);
   const folderInputRef = useRef<HTMLInputElement>(null);
   const vmdInputRef = useRef<HTMLInputElement>(null);
+  const appendVmdInputRef = useRef<HTMLInputElement>(null);
 
   const processPmxFileList = (files: FileList | File[]) => {
     if (!files || files.length === 0) return;
@@ -126,19 +142,31 @@ export const DropZoneSection: React.FC<DropZoneSectionProps> = ({ t, pipeline })
     }
   };
 
-  const handleVmdFileChange = (e: React.ChangeEvent<HTMLInputElement>) => {
-    const file = e.target.files?.[0];
-    if (file) {
-      const ok =
-        bakeTargetType === 'camera'
-          ? file.name.toLowerCase().endsWith('.vmd')
-          : isSupportedMotionFile(file.name);
-      if (ok) {
-        selectVmd(file);
-      } else {
-        alert(t.vmdAlert);
-      }
+  const handleIncomingMotionFiles = async (
+    rawFiles: File[],
+    mode: 'auto' | 'replace' | 'append'
+  ) => {
+    const matched = rawFiles.filter((f) =>
+      bakeTargetType === 'camera'
+        ? f.name.toLowerCase().endsWith('.vmd')
+        : isSupportedMotionFile(f.name)
+    );
+    if (matched.length === 0) {
+      alert(mode === 'auto' ? t.vmdAlert : t.vmdNotFoundAlert);
+      return;
     }
+    await selectMotionFiles(matched, bakeTargetType, mode);
+  };
+
+  const handleVmdFileChange = async (
+    e: React.ChangeEvent<HTMLInputElement>,
+    mode: 'auto' | 'append'
+  ) => {
+    const fileList = e.target.files;
+    if (fileList && fileList.length > 0) {
+      await handleIncomingMotionFiles(Array.from(fileList), mode);
+    }
+    e.target.value = '';
   };
 
   const handleDragOver = (e: React.DragEvent) => {
@@ -161,16 +189,26 @@ export const DropZoneSection: React.FC<DropZoneSectionProps> = ({ t, pipeline })
     if (processing) return;
 
     const files = await scanFilesFromDataTransfer(e.dataTransfer);
-    const motion = files.find((f) =>
+    const matched = files.filter((f) =>
       bakeTargetType === 'camera'
         ? f.name.toLowerCase().endsWith('.vmd')
         : isSupportedMotionFile(f.name)
     );
-    if (motion) {
-      selectVmd(motion);
+    if (matched.length > 0) {
+      await selectMotionFiles(matched, bakeTargetType, 'auto');
     } else {
       alert(t.vmdNotFoundAlert);
     }
+  };
+
+  const renderPlaceholderTitle = () => {
+    if (bakeTargetType === 'motion' && vmdEntries.length > 1) {
+      return t.vmdMultiLoaded(vmdEntries.length);
+    }
+    if (vmdFile) {
+      return t.vmdLoaded(vmdFile.name);
+    }
+    return bakeTargetType === 'motion' ? t.vmdPlaceholder : t.cameraVmdPlaceholder;
   };
 
   return (
@@ -311,7 +349,7 @@ export const DropZoneSection: React.FC<DropZoneSectionProps> = ({ t, pipeline })
         </div>
       </div>
 
-      {/* 动作/镜头动画文件嵌入区域 */}
+      {/* 动作/镜头动画文件嵌入区域（支持多 VMD 自动识别） */}
       <div>
         <div style={{ fontSize: 12, fontWeight: 600, color: '#374151', marginBottom: 6 }}>
           {bakeTargetType === 'motion' ? t.vmdMotionTitle : t.vmdCameraTitle}
@@ -319,8 +357,17 @@ export const DropZoneSection: React.FC<DropZoneSectionProps> = ({ t, pipeline })
         <input
           ref={vmdInputRef}
           type="file"
+          multiple={bakeTargetType === 'motion'}
           accept={bakeTargetType === 'camera' ? '.vmd' : '.vmd,.fbx,.npy,.bvh,.anim,.json'}
-          onChange={handleVmdFileChange}
+          onChange={(e) => void handleVmdFileChange(e, 'auto')}
+          style={{ display: 'none' }}
+        />
+        <input
+          ref={appendVmdInputRef}
+          type="file"
+          multiple
+          accept=".vmd"
+          onChange={(e) => void handleVmdFileChange(e, 'append')}
           style={{ display: 'none' }}
         />
         <div
@@ -337,14 +384,137 @@ export const DropZoneSection: React.FC<DropZoneSectionProps> = ({ t, pipeline })
           }}
         >
           <div style={{ fontSize: 12, fontWeight: 600, color: '#1677ff', marginBottom: 4 }}>
-            {vmdFile
-              ? t.vmdLoaded(vmdFile.name)
-              : bakeTargetType === 'motion'
-              ? t.vmdPlaceholder
-              : t.cameraVmdPlaceholder}
+            {renderPlaceholderTitle()}
           </div>
           <div style={{ fontSize: 10, color: '#9ca3af' }}>{t.vmdHint}</div>
         </div>
+
+        {/* 已识别的多 VMD 轨道列表 */}
+        {bakeTargetType === 'motion' && vmdEntries.length > 0 && (
+          <div
+            style={{
+              marginTop: 8,
+              display: 'flex',
+              flexDirection: 'column',
+              gap: 5,
+            }}
+          >
+            {vmdEntries.map((entry, idx) => {
+              const badgeStyle = ROLE_BADGE_STYLE[entry.role] || ROLE_BADGE_STYLE.empty;
+              return (
+                <div
+                  key={`${entry.name}-${idx}`}
+                  style={{
+                    display: 'flex',
+                    alignItems: 'center',
+                    justifyContent: 'space-between',
+                    gap: 6,
+                    padding: '5px 7px',
+                    background: '#f8fafc',
+                    border: '1px solid #e2e8f0',
+                    borderRadius: 4,
+                    fontSize: 11,
+                  }}
+                >
+                  <div style={{ display: 'flex', alignItems: 'center', gap: 6, minWidth: 0, flex: 1 }}>
+                    <span
+                      style={{
+                        flexShrink: 0,
+                        padding: '1px 5px',
+                        borderRadius: 3,
+                        fontSize: 10,
+                        fontWeight: 700,
+                        background: badgeStyle.bg,
+                        color: badgeStyle.color,
+                        border: `1px solid ${badgeStyle.border}`,
+                      }}
+                    >
+                      {t.vmdRoleLabels[entry.role] || entry.role}
+                    </span>
+                    <span
+                      title={entry.name}
+                      style={{
+                        overflow: 'hidden',
+                        textOverflow: 'ellipsis',
+                        whiteSpace: 'nowrap',
+                        color: '#1e293b',
+                        fontWeight: 500,
+                      }}
+                    >
+                      {entry.name}
+                    </span>
+                  </div>
+
+                  <div style={{ display: 'flex', alignItems: 'center', gap: 6, flexShrink: 0 }}>
+                    <span style={{ fontSize: 10, color: '#64748b', fontFamily: 'monospace' }}>
+                      {entry.uniqueBones > 0 ? `${entry.uniqueBones}骨 ` : ''}
+                      {entry.uniqueMorphs > 0 ? `${entry.uniqueMorphs}表情` : ''}
+                    </span>
+                    <button
+                      type="button"
+                      disabled={processing}
+                      onClick={() => removeVmdEntry(idx)}
+                      style={{
+                        border: 'none',
+                        background: 'transparent',
+                        color: '#94a3b8',
+                        cursor: processing ? 'not-allowed' : 'pointer',
+                        padding: '0 2px',
+                        fontSize: 13,
+                        lineHeight: 1,
+                      }}
+                    >
+                      ×
+                    </button>
+                  </div>
+                </div>
+              );
+            })}
+
+            {skippedCameraNames.length > 0 && (
+              <div style={{ fontSize: 10, color: '#b45309', padding: '2px 4px' }}>
+                {t.vmdSkippedCameraTip(skippedCameraNames.join(', '))}
+              </div>
+            )}
+
+            <div style={{ display: 'flex', gap: 6, marginTop: 2 }}>
+              <button
+                type="button"
+                disabled={processing}
+                onClick={() => appendVmdInputRef.current?.click()}
+                style={{
+                  flex: 1,
+                  padding: '4px 8px',
+                  fontSize: 11,
+                  fontWeight: 600,
+                  color: '#1677ff',
+                  background: '#eff6ff',
+                  border: '1px solid #bfdbfe',
+                  borderRadius: 3,
+                  cursor: processing ? 'not-allowed' : 'pointer',
+                }}
+              >
+                {t.vmdAppendBtn}
+              </button>
+              <button
+                type="button"
+                disabled={processing}
+                onClick={clearVmdFiles}
+                style={{
+                  padding: '4px 8px',
+                  fontSize: 11,
+                  color: '#64748b',
+                  background: '#ffffff',
+                  border: '1px solid #d1d5db',
+                  borderRadius: 3,
+                  cursor: processing ? 'not-allowed' : 'pointer',
+                }}
+              >
+                {t.vmdClearAllBtn}
+              </button>
+            </div>
+          </div>
+        )}
       </div>
     </div>
   );

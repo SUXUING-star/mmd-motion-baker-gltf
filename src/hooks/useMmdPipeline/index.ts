@@ -7,31 +7,32 @@ import { ExpressionTrack } from '../../utils/expressionTrackEvaluator';
 import { VrmaMetaOptions } from '../../utils/motionExporter';
 import { smoothAnimationClip } from '../../utils/motionSmoother';
 import { VmdExpressionTrackSummary } from '../../utils/vmdExpressionAnalyzer';
+import { VmdFileSummary } from '../../utils/vmdMerger';
 import { LoopController, useLoopController } from './useLoopController';
 import {
-    BakerThreeBridge,
-    BakeTargetType,
-    PreviewMeshRefState,
-    StatusType,
-    useMmdBaker,
+  BakerThreeBridge,
+  BakeTargetType,
+  PreviewMeshRefState,
+  StatusType,
+  useMmdBaker,
 } from './useMmdBaker';
 import { useMmdFiles } from './useMmdFiles';
 import { useMotionExporter } from './useMotionExporter';
 import { MotionSmoothController, useMotionSmoothing } from './useMotionSmoothing';
 import { RootPostProcessController, useRootPostProcess } from './useRootPostProcess';
 import {
-    TimelineController,
-    TimelineThreeBridge,
-    useTimelinePlayback,
+  TimelineController,
+  TimelineThreeBridge,
+  useTimelinePlayback,
 } from './useTimelinePlayback';
 
 export type {
-    BakeTargetType,
-    LoopController,
-    MotionSmoothController,
-    RootPostProcessController,
-    StatusType,
-    TimelineController
+  BakeTargetType,
+  LoopController,
+  MotionSmoothController,
+  RootPostProcessController,
+  StatusType,
+  TimelineController
 };
 
 export interface MmdPipeline {
@@ -45,7 +46,16 @@ export interface MmdPipeline {
   customPmxFile: File | null;
   vmdFile: File | null;
   activePmxTarget: File | string;
-  activeVmdTarget: File | string;
+  vmdEntries: VmdFileSummary[];
+  skippedCameraNames: string[];
+  selectMotionFiles: (
+    files: File[],
+    bakeTargetType?: 'motion' | 'camera',
+    mode?: 'auto' | 'replace' | 'append'
+  ) => Promise<void>;
+  removeVmdEntry: (index: number) => void;
+  clearVmdFiles: () => void;
+  activeVmdTarget: File | File[] | string; // 替换原 File | string
   availableMorphs: ModelMorphInfo[];
   selectPmx: (file: File | null, extraFiles?: File[]) => void;
   selectVmd: (file: File) => void;
@@ -166,6 +176,11 @@ export function useMmdPipeline(
     selectPmx: files.selectPmx,
     selectVmd: files.selectVmd,
     resetPmx: files.resetPmx,
+    vmdEntries: files.vmdEntries,
+    skippedCameraNames: files.skippedCameraNames,
+    selectMotionFiles: files.selectMotionFiles,
+    removeVmdEntry: files.removeVmdEntry,
+    clearVmdFiles: files.clearVmdFiles,
 
     timeline: playback.timeline,
     loop: loop.loop,

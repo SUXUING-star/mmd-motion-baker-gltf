@@ -5,6 +5,7 @@ import { MMDLoader } from 'three/examples/jsm/loaders/MMDLoader.js';
 import { resolveModelBones } from '../types/boneMapping';
 import { resolveExpressionTarget } from '../types/expressionMapping';
 import { LandmarkData, LandmarkFrame, ModelMorphInfo } from '../types/types';
+import { mergeVmdFiles } from './vmdMerger';
 
 export interface BakerRenderCallback {
   (
@@ -72,7 +73,6 @@ function cleanRestPoseFrames(
 ): LandmarkFrame[] {
   if (frames.length < 10) return frames;
 
-  // 重点监控四肢与躯干关键骨骼，准确判断是否处于未激活的静态 A-Pose 状态
   const keyBones = [
     'leftUpperArm', 'rightUpperArm', 'leftLowerArm', 'rightLowerArm',
     'leftHand', 'rightHand', 'leftUpperLeg', 'rightUpperLeg',
@@ -95,7 +95,6 @@ function cleanRestPoseFrames(
       }
     }
 
-    // 若重点骨骼未能匹配，降级计算全量骨骼
     if (count === 0) {
       for (const k in restLm) {
         if (frameLm[k] && restLm[k]) {
@@ -111,29 +110,36 @@ function cleanRestPoseFrames(
     return count > 0 ? Math.sqrt(sumSq / count) : Infinity;
   };
 
-  // 1. 扫描开头：姿态偏差小于 0.035m 即认定为静止 A-Pose / T-Pose，直接切掉
+  const hasActiveExpression = (frame: LandmarkFrame): boolean => {
+    if (!frame.expressions) return false;
+    for (const v of Object.values(frame.expressions)) {
+      if (v > 0.01) return true;
+    }
+    return false;
+  };
+
+  // 若全片无任何骨骼位移（纯表情/口型 VMD），不做骨骼静止裁剪
+  const hasBoneMotion = frames.some((f) => getPoseDiffFromRest(f) >= 0.035);
+  if (!hasBoneMotion) return frames;
+
   let startIndex = 0;
   while (startIndex < frames.length - 5) {
-    const diff = getPoseDiffFromRest(frames[startIndex]);
-    if (diff < 0.035) {
+    if (getPoseDiffFromRest(frames[startIndex]) < 0.035 && !hasActiveExpression(frames[startIndex])) {
       startIndex++;
     } else {
       break;
     }
   }
 
-  // 2. 扫描结尾：剔除末端残留的静止 A-Pose 帧
   let endIndex = frames.length - 1;
   while (endIndex > startIndex + 5) {
-    const diff = getPoseDiffFromRest(frames[endIndex]);
-    if (diff < 0.035) {
+    if (getPoseDiffFromRest(frames[endIndex]) < 0.035 && !hasActiveExpression(frames[endIndex])) {
       endIndex--;
     } else {
       break;
     }
   }
 
-  // 重新归一化时间轴起点
   if (startIndex > 0 || endIndex < frames.length - 1) {
     const sliced = frames.slice(startIndex, endIndex + 1);
     const baseTime = sliced[0].time;
@@ -232,7 +238,7 @@ export async function loadPmxMeshOnly(
 
 export async function bakePure3DLandmarks(
   pmxInput: File | string,
-  vmdInput: File | string,
+  vmdInput: File | File[] | string,
   onFrameRender?: BakerRenderCallback,
   extraFiles?: File[]
 ): Promise<BakerResult> {
@@ -250,6 +256,13 @@ export async function bakePure3DLandmarks(
 
   if (typeof vmdInput === 'string') {
     vmdUrl = vmdInput;
+  } else if (Array.isArray(vmdInput)) {
+    if (vmdInput.length === 0) {
+      throw new Error('未选择任何 VMD 文件');
+    }
+    const targetFile = vmdInput.length === 1 ? vmdInput[0] : await mergeVmdFiles(vmdInput);
+    vmdUrl = URL.createObjectURL(targetFile) + '#motion.vmd';
+    isVmdBlob = true;
   } else {
     vmdUrl = URL.createObjectURL(vmdInput) + '#motion.vmd';
     isVmdBlob = true;
