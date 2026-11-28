@@ -1,4 +1,5 @@
-import { RefObject, useCallback, useEffect, useMemo, useRef, useState } from 'react';
+// src/hooks/useMmdPipeline/useLoopController.ts
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { LandmarkData } from '../../types/types';
 import {
     applyLoopSegmentToLandmarkData,
@@ -21,8 +22,9 @@ export interface LoopController {
 }
 
 interface UseLoopControllerParams {
-  rawLandmarkDataRef: RefObject<LandmarkData | null>;
+  getBaseLandmarkData: () => LandmarkData | null;
   sessionVersion: number;
+  smoothRevision: number;
   playback: {
     timeline: TimelineController;
     startFrame: number;
@@ -32,8 +34,9 @@ interface UseLoopControllerParams {
 }
 
 export function useLoopController({
-  rawLandmarkDataRef,
+  getBaseLandmarkData,
   sessionVersion,
+  smoothRevision,
   playback,
 }: UseLoopControllerParams) {
   const [candidates, setCandidates] = useState<LoopCandidate[]>([]);
@@ -55,6 +58,15 @@ export function useLoopController({
   }, [sessionVersion]);
 
   useEffect(() => {
+    if (smoothRevision === 0) return;
+    stitchedLandmarkDataRef.current = null;
+    isBakedRef.current = false;
+    setCandidates([]);
+    setRegion(null);
+    setIsBaked(false);
+  }, [smoothRevision]);
+
+  useEffect(() => {
     if (!isBaked && region) {
       if (region.startFrame !== playback.startFrame || region.endFrame !== playback.endFrame) {
         setRegion((prev) =>
@@ -73,19 +85,20 @@ export function useLoopController({
   const { timeline, updateTimelineData } = playback;
 
   const findCandidates = useCallback(() => {
-    const src = rawLandmarkDataRef.current;
+    const src = getBaseLandmarkData();
     if (!src) return;
-    setCandidates(findLoopCandidates(src));
-  }, [rawLandmarkDataRef]);
+    const minGap = Math.max(24, Math.round((src.fps || 30) * 0.8));
+    setCandidates(findLoopCandidates(src, minGap));
+  }, [getBaseLandmarkData]);
 
   const selectCandidate = useCallback(
     (c: LoopCandidate) => {
-      const raw = rawLandmarkDataRef.current;
-      if (raw && isBaked) {
+      const base = getBaseLandmarkData();
+      if (base && isBaked) {
         stitchedLandmarkDataRef.current = null;
         isBakedRef.current = false;
         setIsBaked(false);
-        updateTimelineData(raw);
+        updateTimelineData(base);
       }
 
       setRegion({
@@ -97,28 +110,29 @@ export function useLoopController({
       timeline.setStart(c.startFrame);
       timeline.setEnd(c.endFrame);
     },
-    [rawLandmarkDataRef, isBaked, updateTimelineData, timeline]
+    [getBaseLandmarkData, isBaked, updateTimelineData, timeline]
   );
 
   const updateRegion = useCallback(
     (nextRegion: LoopRegionConfig | null) => {
-      if (nextRegion === null && isBaked && rawLandmarkDataRef.current) {
+      const base = getBaseLandmarkData();
+      if (nextRegion === null && isBaked && base) {
         stitchedLandmarkDataRef.current = null;
         isBakedRef.current = false;
         setIsBaked(false);
-        updateTimelineData(rawLandmarkDataRef.current);
+        updateTimelineData(base);
       }
       setRegion(nextRegion);
     },
-    [isBaked, rawLandmarkDataRef, updateTimelineData]
+    [isBaked, getBaseLandmarkData, updateTimelineData]
   );
 
   const applyToTimeline = useCallback(() => {
-    const raw = rawLandmarkDataRef.current;
-    if (!raw || !region) return;
+    const base = getBaseLandmarkData();
+    if (!base || !region) return;
 
     const stitched = applyLoopSegmentToLandmarkData(
-      raw,
+      base,
       region.startFrame,
       region.endFrame,
       region.blendDuration,
@@ -129,21 +143,21 @@ export function useLoopController({
     isBakedRef.current = true;
     setIsBaked(true);
     updateTimelineData(stitched);
-  }, [rawLandmarkDataRef, region, updateTimelineData]);
+  }, [getBaseLandmarkData, region, updateTimelineData]);
 
   const restoreRaw = useCallback(() => {
-    const raw = rawLandmarkDataRef.current;
-    if (!raw) return;
+    const base = getBaseLandmarkData();
+    if (!base) return;
 
     stitchedLandmarkDataRef.current = null;
     isBakedRef.current = false;
     setIsBaked(false);
-    updateTimelineData(raw);
+    updateTimelineData(base);
     if (region) {
       timeline.setStart(region.startFrame);
       timeline.setEnd(region.endFrame);
     }
-  }, [rawLandmarkDataRef, region, updateTimelineData, timeline]);
+  }, [getBaseLandmarkData, region, updateTimelineData, timeline]);
 
   const getActiveLandmarkData = useCallback((): LandmarkData | null => {
     if (
@@ -153,8 +167,8 @@ export function useLoopController({
     ) {
       return stitchedLandmarkDataRef.current;
     }
-    return rawLandmarkDataRef.current;
-  }, [rawLandmarkDataRef]);
+    return getBaseLandmarkData();
+  }, [getBaseLandmarkData]);
 
   const fps = timeline.fps || 30;
   const bridgeFrames = isBaked

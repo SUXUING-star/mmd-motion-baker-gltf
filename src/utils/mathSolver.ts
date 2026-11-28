@@ -8,6 +8,11 @@ import { ensureQuatContinuity, getV, hasBone } from '../solvers/mathUtils';
 import { solveSpine } from '../solvers/spineSolver';
 import { HUMANOID_BONES, HumanoidBoneName, StandardBone } from '../types/boneMapping';
 import { LandmarkData, LandmarkFrame } from '../types/types';
+import {
+    applyRootPostProcessToSolvedHumanoid,
+    LandmarkDataWithPostProcess,
+    RootPostProcessConfig,
+} from './rootPostProcess';
 
 function solveSingleFramePose(
   lm: Record<string, [number, number, number]>,
@@ -75,11 +80,82 @@ function solveSequenceContinuous(
   return { hipsArr, quatsArr, lastPrevQuats: prevQuats };
 }
 
-export function solveAllHumanoidQuaternions(data: LandmarkData) {
+/**
+ * 导出前对 52 根骨骼四元数施加对称高斯 SLERP 平滑，消除 IK/方向解算产生的关节旋转抖动
+ */
+function applyQuaternionSlerpSmoothing(
+  quatTracksData: Record<HumanoidBoneName, number[]>,
+  smoothStrength?: number
+): void {
+  if (!smoothStrength || smoothStrength <= 0) return;
+
+  const alpha = Math.max(0, Math.min(1, smoothStrength / 100));
+  const sigma = 0.5 + alpha * 1.1;
+  const radius = Math.max(1, Math.ceil(sigma * 2));
+  const blend = Math.min(0.85, alpha * 0.65);
+
+  const weights = new Float32Array(radius * 2 + 1);
+  for (let d = -radius; d <= radius; d++) {
+    weights[d + radius] = Math.exp(-0.5 * (d / sigma) * (d / sigma));
+  }
+
+  const qOrig = new THREE.Quaternion();
+  const qAvg = new THREE.Quaternion();
+
+  for (const boneName of HUMANOID_BONES) {
+    const arr = quatTracksData[boneName];
+    if (!arr || arr.length < 12) continue;
+    const frameCount = Math.floor(arr.length / 4);
+    const out = new Float32Array(arr.length);
+
+    for (let i = 0; i < frameCount; i++) {
+      const i4 = i * 4;
+      const bx = arr[i4];
+      const by = arr[i4 + 1];
+      const bz = arr[i4 + 2];
+      const bw = arr[i4 + 3];
+
+      let ax = 0, ay = 0, az = 0, aw = 0;
+      for (let d = -radius; d <= radius; d++) {
+        const idx = Math.max(0, Math.min(frameCount - 1, i + d));
+        const j4 = idx * 4;
+        const w = weights[d + radius];
+        const dot = arr[j4] * bx + arr[j4 + 1] * by + arr[j4 + 2] * bz + arr[j4 + 3] * bw;
+        const sgn = dot < 0 ? -1 : 1;
+        ax += arr[j4] * sgn * w;
+        ay += arr[j4 + 1] * sgn * w;
+        az += arr[j4 + 2] * sgn * w;
+        aw += arr[j4 + 3] * sgn * w;
+      }
+
+      qOrig.set(bx, by, bz, bw).normalize();
+      qAvg.set(ax, ay, az, aw).normalize();
+      qOrig.slerp(qAvg, blend);
+
+      out[i4] = qOrig.x;
+      out[i4 + 1] = qOrig.y;
+      out[i4 + 2] = qOrig.z;
+      out[i4 + 3] = qOrig.w;
+    }
+
+    for (let k = 0; k < arr.length; k++) {
+      arr[k] = out[k];
+    }
+  }
+}
+
+export function solveAllHumanoidQuaternions(
+  data: LandmarkData | LandmarkDataWithPostProcess,
+  rootPostProcessOverride?: RootPostProcessConfig
+) {
   const { frames } = data;
   if (frames.length === 0) {
     return { times: [], hipsPositions: [], quatTracksData: {} as any };
   }
+
+  const extData = data as LandmarkDataWithPostProcess;
+  const rootPostProcess = rootPostProcessOverride ?? extData.rootPostProcess;
+  const smoothStrength = extData.smoothStrength ?? 0;
 
   const f0 = frames[0].landmarks;
   const restLm = data.restLandmarks;
@@ -96,14 +172,19 @@ export function solveAllHumanoidQuaternions(data: LandmarkData) {
   const mmdLegSpan = Math.max(0.5, pPelvis0Y - ankleBaseY);
   const scaleFactor = 0.87 / mmdLegSpan;
 
-  // 若启用了循环模式，直接交由专属循环解算器统一完成旋转空间闭环并返回
   if (data.loopMode) {
-    return solveHumanoidRotationLoop(data, (seq, initPrev) =>
+    const loopResult = solveHumanoidRotationLoop(data, (seq, initPrev) =>
       solveSequenceContinuous(seq, scaleFactor, ankleBaseY, restLm, initPrev)
     );
+    applyQuaternionSlerpSmoothing(loopResult.quatTracksData, smoothStrength);
+    applyRootPostProcessToSolvedHumanoid(
+      loopResult.hipsPositions,
+      loopResult.quatTracksData,
+      rootPostProcess
+    );
+    return loopResult;
   }
 
-  // 非循环普通片段：纯运动学连续解算 + Hips 轻平滑
   const frameCount = frames.length;
   const times: number[] = frames.map((f) => f.time);
   const hipsPositions: number[] = [];
@@ -134,6 +215,9 @@ export function solveAllHumanoidQuaternions(data: LandmarkData) {
       }
     }
   }
+
+  applyQuaternionSlerpSmoothing(quatTracksData, smoothStrength);
+  applyRootPostProcessToSolvedHumanoid(hipsPositions, quatTracksData, rootPostProcess);
 
   return { times, hipsPositions, quatTracksData };
 }

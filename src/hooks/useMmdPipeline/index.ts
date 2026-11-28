@@ -1,25 +1,38 @@
-import { useMemo } from 'react';
+// src/hooks/useMmdPipeline/index.ts
+import { useEffect, useMemo, useRef } from 'react';
+import * as THREE from 'three';
 import { I18N, Lang } from '../../i18n';
 import { ModelMorphInfo } from '../../types/types';
 import { ExpressionTrack } from '../../utils/expressionTrackEvaluator';
 import { VrmaMetaOptions } from '../../utils/motionExporter';
+import { smoothAnimationClip } from '../../utils/motionSmoother';
 import { VmdExpressionTrackSummary } from '../../utils/vmdExpressionAnalyzer';
 import { LoopController, useLoopController } from './useLoopController';
 import {
     BakerThreeBridge,
     BakeTargetType,
+    PreviewMeshRefState,
     StatusType,
     useMmdBaker,
 } from './useMmdBaker';
 import { useMmdFiles } from './useMmdFiles';
 import { useMotionExporter } from './useMotionExporter';
+import { MotionSmoothController, useMotionSmoothing } from './useMotionSmoothing';
+import { RootPostProcessController, useRootPostProcess } from './useRootPostProcess';
 import {
     TimelineController,
     TimelineThreeBridge,
     useTimelinePlayback,
 } from './useTimelinePlayback';
 
-export type { BakeTargetType, LoopController, StatusType, TimelineController };
+export type {
+    BakeTargetType,
+    LoopController,
+    MotionSmoothController,
+    RootPostProcessController,
+    StatusType,
+    TimelineController
+};
 
 export interface MmdPipeline {
   bakeTargetType: BakeTargetType;
@@ -39,6 +52,8 @@ export interface MmdPipeline {
   resetPmx: () => void;
   timeline: TimelineController;
   loop: LoopController;
+  rootPostProcess: RootPostProcessController;
+  motionSmooth: MotionSmoothController;
   startBake: () => Promise<void>;
   loadDefaultDemo: () => Promise<void>;
   downloadVrma: (metaOptions?: VrmaMetaOptions) => Promise<void>;
@@ -59,26 +74,70 @@ export function useMmdPipeline(
 ): MmdPipeline {
   const t = useMemo(() => I18N[lang], [lang]);
 
+  const meshPreviewRef = useRef<PreviewMeshRefState>({
+    mesh: null,
+    basePos: new THREE.Vector3(),
+    hasClipAnimation: false,
+  });
+
   const files = useMmdFiles(defaultPmxPath, defaultVmdPath);
-  const playback = useTimelinePlayback(threeBridge, expressionTracks);
+  const playback = useTimelinePlayback(threeBridge, expressionTracks, meshPreviewRef);
   const baker = useMmdBaker({
     threeBridge,
+    meshPreviewRef,
     files,
     playback,
     defaultPmxPath,
     defaultVmdPath,
     t,
   });
-  const loop = useLoopController({
+  const smoothing = useMotionSmoothing({
     rawLandmarkDataRef: baker.rawLandmarkDataRef,
     sessionVersion: baker.sessionVersion,
+    maxFrames: playback.timeline.maxFrames,
+  });
+  const loop = useLoopController({
+    getBaseLandmarkData: smoothing.getSmoothedLandmarkData,
+    sessionVersion: baker.sessionVersion,
+    smoothRevision: smoothing.smoothRevision,
     playback,
   });
+  const root = useRootPostProcess({
+    getActiveLandmarkData: loop.getActiveLandmarkData,
+    sessionVersion: baker.sessionVersion,
+    isLoopBaked: loop.isLoopBaked,
+    maxFrames: playback.timeline.maxFrames,
+    startFrame: playback.startFrame,
+    endFrame: playback.endFrame,
+  });
+
+  useEffect(() => {
+    if (smoothing.smoothRevision === 0) return;
+    const smoothed = smoothing.getSmoothedLandmarkData();
+    if (!smoothed) return;
+    playback.updateTimelineDataPreserveRange(smoothed);
+
+    if (baker.rawAnimationClipRef.current && threeBridge.updateAnimationClip) {
+      const nextClip = smoothAnimationClip(
+        baker.rawAnimationClipRef.current,
+        smoothing.smoothConfig,
+        baker.rawLandmarkDataRef.current?.fps || 30
+      );
+      threeBridge.updateAnimationClip(nextClip);
+    }
+  }, [smoothing.smoothRevision]);
+
+  useEffect(() => {
+    playback.bindRootOffsetEvaluators(root.getFrameOffsetMmd, root.getFrameOffsetMeters);
+  }, [playback, root.getFrameOffsetMmd, root.getFrameOffsetMeters]);
+
   const exporter = useMotionExporter({
     bakeTargetType: baker.bakeTargetType,
     getActiveLandmarkData: loop.getActiveLandmarkData,
     cameraDataRef: baker.cameraDataRef,
     expressionTracks,
+    rootPostProcess: root.rootPostProcess,
+    smoothStrength: smoothing.smoothConfig.smoothStrength,
     loopRegion: loop.loopRegion,
     isLoopBaked: loop.isLoopBaked,
     startFrame: playback.startFrame,
@@ -88,7 +147,6 @@ export function useMmdPipeline(
   });
 
   return {
-    // 烘焙与会话状态
     bakeTargetType: baker.bakeTargetType,
     setBakeTargetType: baker.setBakeTargetType,
     status: baker.status,
@@ -101,7 +159,6 @@ export function useMmdPipeline(
     startBake: baker.startBake,
     loadDefaultDemo: baker.loadDefaultDemo,
 
-    // 文件状态
     customPmxFile: files.customPmxFile,
     vmdFile: files.vmdFile,
     activePmxTarget: files.activePmxTarget,
@@ -110,11 +167,11 @@ export function useMmdPipeline(
     selectVmd: files.selectVmd,
     resetPmx: files.resetPmx,
 
-    // 控制器
     timeline: playback.timeline,
     loop: loop.loop,
+    rootPostProcess: root.rootController,
+    motionSmooth: smoothing.smoothController,
 
-    // 导出状态与动作
     exportingType: exporter.exportingType,
     downloadVrma: exporter.downloadVrma,
     downloadGlb: exporter.downloadGlb,

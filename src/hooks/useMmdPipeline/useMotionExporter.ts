@@ -1,18 +1,20 @@
+// src/hooks/useMmdPipeline/useMotionExporter.ts
 import { RefObject, useCallback, useState } from 'react';
 import { I18nTexts } from '../../i18n';
 import { CameraAnimationData } from '../../solvers/cameraSolver';
 import { LandmarkData } from '../../types/types';
 import { exportCameraGLB, exportCameraVRMA } from '../../utils/cameraExporter';
 import {
-    ExpressionTrack,
-    mergeExpressionTracksIntoLandmarkData,
+  ExpressionTrack,
+  mergeExpressionTracksIntoLandmarkData,
 } from '../../utils/expressionTrackEvaluator';
 import { exportFull52HumanoidGLB, exportFull52VRMA, VrmaMetaOptions } from '../../utils/motionExporter';
 import {
-    applyLoopSegmentToLandmarkData,
-    LoopRegionConfig,
-    trimLandmarkData,
+  applyLoopSegmentToLandmarkData,
+  LoopRegionConfig,
+  trimLandmarkData,
 } from '../../utils/motionTrimmer';
+import { LandmarkDataWithPostProcess, RootPostProcessConfig } from '../../utils/rootPostProcess';
 import { BakeTargetType } from './useMmdBaker';
 
 function triggerBrowserDownload(blob: Blob, filename: string) {
@@ -28,9 +30,11 @@ function triggerBrowserDownload(blob: Blob, filename: string) {
 
 interface MotionExporterDeps {
   bakeTargetType: BakeTargetType;
+  smoothStrength: number;
   getActiveLandmarkData: () => LandmarkData | null;
   cameraDataRef: RefObject<CameraAnimationData | null>;
   expressionTracks: ExpressionTrack[];
+  rootPostProcess: RootPostProcessConfig;
   loopRegion: LoopRegionConfig | null;
   isLoopBaked: boolean;
   startFrame: number;
@@ -41,9 +45,11 @@ interface MotionExporterDeps {
 
 export function useMotionExporter({
   bakeTargetType,
+  smoothStrength,
   getActiveLandmarkData,
   cameraDataRef,
   expressionTracks,
+  rootPostProcess,
   loopRegion,
   isLoopBaked,
   startFrame,
@@ -79,7 +85,12 @@ export function useMotionExporter({
           exportData = trimLandmarkData(withExpressions, startFrame, endFrame);
         }
 
-        const blob = await buildBlob(exportData);
+        const exportDataWithPost: LandmarkDataWithPostProcess = {
+          ...exportData,
+          rootPostProcess,
+          smoothStrength,
+        };
+        const blob = await buildBlob(exportDataWithPost);
         triggerBrowserDownload(blob, `${getBaseFilename()}_[${startFrame}-${endFrame}].${format}`);
       } catch (err) {
         const errMsg = t
@@ -93,6 +104,7 @@ export function useMotionExporter({
     [
       getActiveLandmarkData,
       expressionTracks,
+      rootPostProcess,
       loopRegion,
       isLoopBaked,
       startFrame,

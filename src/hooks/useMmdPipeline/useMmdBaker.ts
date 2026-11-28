@@ -1,5 +1,5 @@
 // src/hooks/useMmdPipeline/useMmdBaker.ts
-import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { MutableRefObject, useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import * as THREE from 'three';
 import { I18nTexts } from '../../i18n';
 import { CameraAnimationData } from '../../solvers/cameraSolver';
@@ -8,18 +8,25 @@ import { bakePure3DLandmarks, BakerResult, loadPmxMeshOnly } from '../../utils/b
 import { bakeCameraVmd } from '../../utils/cameraBaker';
 import { bakePointCloudMotion, isVmdFilename } from '../../utils/pointCloudBaker';
 import {
-    analyzeVmdExpressions,
-    VmdExpressionTrackSummary,
+  analyzeVmdExpressions,
+  VmdExpressionTrackSummary,
 } from '../../utils/vmdExpressionAnalyzer';
 
 export type StatusType = 'ready' | 'analyzing' | 'ready_to_export' | 'exporting' | 'error';
 export type BakeTargetType = 'motion' | 'camera';
+
+export interface PreviewMeshRefState {
+  mesh: THREE.SkinnedMesh | null;
+  basePos: THREE.Vector3;
+  hasClipAnimation: boolean;
+}
 
 export interface BakerThreeBridge {
   setMmdCamera: () => void;
   clearCurrentMesh: () => void;
   setupMmdAnimation: (mesh: any, animation?: any) => void;
   updateLandmarks: (mesh: any, landmarks: Record<string, [number, number, number]>) => void;
+  updateAnimationClip?: (animation: THREE.AnimationClip) => void;
   setViewMode?: (mode: 'mmd' | 'camera') => void;
   setCameraPose?: (
     pos: THREE.Vector3 | [number, number, number],
@@ -30,6 +37,7 @@ export interface BakerThreeBridge {
 
 interface UseMmdBakerParams {
   threeBridge: BakerThreeBridge;
+  meshPreviewRef: MutableRefObject<PreviewMeshRefState>;
   files: {
     activePmxTarget: File | string;
     activeVmdTarget: File | string;
@@ -50,6 +58,7 @@ interface UseMmdBakerParams {
 
 export function useMmdBaker({
   threeBridge,
+  meshPreviewRef,
   files,
   playback,
   defaultPmxPath,
@@ -58,6 +67,7 @@ export function useMmdBaker({
 }: UseMmdBakerParams) {
   const rawLandmarkDataRef = useRef<LandmarkData | null>(null);
   const cameraDataRef = useRef<CameraAnimationData | null>(null);
+  const rawAnimationClipRef = useRef<THREE.AnimationClip | null>(null);
 
   const [bakeTargetType, setBakeTargetTypeState] = useState<BakeTargetType>('motion');
   const [statusType, setStatusType] = useState<StatusType>('ready');
@@ -78,11 +88,14 @@ export function useMmdBaker({
 
   const clearBakeData = useCallback(() => {
     rawLandmarkDataRef.current = null;
+    rawAnimationClipRef.current = null;
     cameraDataRef.current = null;
+    meshPreviewRef.current.mesh = null;
+    meshPreviewRef.current.hasClipAnimation = false;
     setAvailableMorphs([]);
     setVmdExpressionTracks([]);
     setProgress(0);
-  }, []);
+  }, [meshPreviewRef]);
 
   const bakeMotionRaw = useCallback(
     async (
@@ -117,16 +130,21 @@ export function useMmdBaker({
             );
 
         rawLandmarkDataRef.current = result.landmarkData;
+        rawAnimationClipRef.current = result.animation ?? null;
         setAvailableMorphs(result.landmarkData.availableMorphs || []);
         setVmdExpressionTracks(analyzeVmdExpressions(result.landmarkData));
         threeBridge.setupMmdAnimation(result.mesh, result.animation);
+
+        meshPreviewRef.current.mesh = result.mesh;
+        meshPreviewRef.current.basePos.copy(result.mesh.position);
+        meshPreviewRef.current.hasClipAnimation = Boolean(result.animation);
 
         return result;
       } finally {
         setProcessing(false);
       }
     },
-    [threeBridge, clearBakeData]
+    [threeBridge, clearBakeData, meshPreviewRef]
   );
 
   const bakeCameraRaw = useCallback(
@@ -270,6 +288,7 @@ export function useMmdBaker({
   return {
     rawLandmarkDataRef,
     cameraDataRef,
+    rawAnimationClipRef,
     bakeTargetType,
     setBakeTargetType,
     status,

@@ -1,10 +1,12 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+// src/hooks/useMmdPipeline/useTimelinePlayback.ts
+import { MutableRefObject, useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import type * as THREE from 'three';
 import { CameraAnimationData } from '../../solvers/cameraSolver';
 import { LandmarkData } from '../../types/types';
 import { ExpressionTrack } from '../../utils/expressionTrackEvaluator';
 import { findBestLoopEndFrame } from '../../utils/motionTrimmer';
 import { evaluatePreviewFrame } from './previewFrame';
+import type { PreviewMeshRefState } from './useMmdBaker';
 
 export interface TimelineController {
   maxFrames: number;
@@ -25,7 +27,12 @@ export interface TimelineThreeBridge {
     time: number,
     landmarks?: Record<string, [number, number, number]>,
     blendTarget?: { startTime: number; weight: number },
-    expressionsOverride?: Record<string, number>
+    expressionsOverride?: Record<string, number>,
+    rootOffsetMmd?: [number, number, number]
+  ) => void;
+  setRootOffset?: (
+    offsetMmd: [number, number, number],
+    offsetMeters: [number, number, number]
   ) => void;
   setCameraPose?: (
     pos: THREE.Vector3 | [number, number, number],
@@ -36,7 +43,8 @@ export interface TimelineThreeBridge {
 
 export function useTimelinePlayback(
   threeBridge: TimelineThreeBridge,
-  expressionTracks: ExpressionTrack[]
+  expressionTracks: ExpressionTrack[],
+  meshPreviewRef?: MutableRefObject<PreviewMeshRefState>
 ) {
   const [maxFrames, setMaxFrames] = useState<number>(0);
   const [fps, setFps] = useState<number>(30);
@@ -61,6 +69,13 @@ export function useTimelinePlayback(
 
   const expressionTracksRef = useRef<ExpressionTrack[]>(expressionTracks);
 
+  const getFrameOffsetMmdRef = useRef<(frameIdx: number) => [number, number, number]>(
+    () => [0, 0, 0]
+  );
+  const getFrameOffsetMetersRef = useRef<(frameIdx: number) => [number, number, number]>(
+    () => [0, 0, 0]
+  );
+
   const stopPlayback = useCallback(() => {
     if (timerRef.current !== null) {
       clearInterval(timerRef.current);
@@ -74,31 +89,51 @@ export function useTimelinePlayback(
     return () => stopPlayback();
   }, [stopPlayback]);
 
-  const renderFrame = useCallback((frameIdx: number) => {
-    if (cameraDataRef.current && threeBridgeRef.current.setCameraPose) {
-      const camFrame = cameraDataRef.current.frames[frameIdx];
-      if (camFrame) {
-        threeBridgeRef.current.setCameraPose(camFrame.position, camFrame.quaternion, camFrame.fov);
+  const renderFrame = useCallback(
+    (frameIdx: number) => {
+      if (cameraDataRef.current && threeBridgeRef.current.setCameraPose) {
+        const camFrame = cameraDataRef.current.frames[frameIdx];
+        if (camFrame) {
+          threeBridgeRef.current.setCameraPose(camFrame.position, camFrame.quaternion, camFrame.fov);
+        }
       }
-    }
 
-    const data = landmarkDataRef.current;
-    if (!data) return;
+      const data = landmarkDataRef.current;
+      if (!data) return;
 
-    const result = evaluatePreviewFrame({
-      data,
-      frameIdx,
-      expressionTracks: expressionTracksRef.current,
-    });
-    if (!result) return;
+      const offsetMmd = getFrameOffsetMmdRef.current(frameIdx);
+      const offsetMeters = getFrameOffsetMetersRef.current(frameIdx);
 
-    threeBridgeRef.current.setMmdTime(
-      result.time,
-      result.landmarks,
-      result.blendTarget,
-      result.expressionsOverride
-    );
-  }, []);
+      const result = evaluatePreviewFrame({
+        data,
+        frameIdx,
+        expressionTracks: expressionTracksRef.current,
+        rootOffsetMmd: offsetMmd,
+      });
+      if (!result) return;
+
+      if (threeBridgeRef.current.setRootOffset) {
+        threeBridgeRef.current.setRootOffset(offsetMmd, offsetMeters);
+      } else if (meshPreviewRef?.current.hasClipAnimation && meshPreviewRef.current.mesh) {
+        const mesh = meshPreviewRef.current.mesh;
+        const base = meshPreviewRef.current.basePos;
+        mesh.position.set(
+          base.x + offsetMmd[0] * mesh.scale.x,
+          base.y + offsetMmd[1] * mesh.scale.y,
+          base.z + offsetMmd[2] * mesh.scale.z
+        );
+      }
+
+      threeBridgeRef.current.setMmdTime(
+        result.time,
+        result.landmarks,
+        result.blendTarget,
+        result.expressionsOverride,
+        offsetMmd
+      );
+    },
+    [meshPreviewRef]
+  );
 
   useEffect(() => {
     expressionTracksRef.current = expressionTracks;
@@ -106,6 +141,20 @@ export function useTimelinePlayback(
       renderFrame(currentFrameRef.current);
     }
   }, [expressionTracks, renderFrame]);
+
+  const bindRootOffsetEvaluators = useCallback(
+    (
+      getMmd: (frameIdx: number) => [number, number, number],
+      getMeters: (frameIdx: number) => [number, number, number]
+    ) => {
+      getFrameOffsetMmdRef.current = getMmd;
+      getFrameOffsetMetersRef.current = getMeters;
+      if (!isPlayingRef.current && landmarkDataRef.current) {
+        renderFrame(currentFrameRef.current);
+      }
+    },
+    [renderFrame]
+  );
 
   const seekToFrame = useCallback(
     (frameIdx: number) => {
@@ -180,8 +229,8 @@ export function useTimelinePlayback(
       startFrameRef.current = 0;
       endFrameRef.current = defaultEnd;
       loopRestartFrameRef.current = landmarkData.loopMode
-         ? (landmarkData.loopStartFrame ?? 0)
-         : null;
+        ? (landmarkData.loopStartFrame ?? 0)
+        : null;
 
       setMaxFrames(total);
       setFps(landmarkData.fps);
@@ -210,8 +259,8 @@ export function useTimelinePlayback(
       setStartFrame(0);
       setEndFrame(defaultEnd);
       loopRestartFrameRef.current = landmarkData.loopMode
-          ? (landmarkData.loopStartFrame ?? 0)
-          : null;
+        ? (landmarkData.loopStartFrame ?? 0)
+        : null;
 
       if (currentFrameRef.current >= total) {
         currentFrameRef.current = 0;
@@ -239,7 +288,6 @@ export function useTimelinePlayback(
       setFps(camData.fps);
       setStartFrame(0);
       setEndFrame(defaultEnd);
-
 
       startPlayback(0);
     },
@@ -313,8 +361,48 @@ export function useTimelinePlayback(
     setCurrentFrame(0);
     setStartFrame(0);
     setEndFrame(0);
-
   }, [stopPlayback]);
+
+  const updateTimelineDataPreserveRange = useCallback(
+     (landmarkData: LandmarkData) => {
+       const prevTotal = landmarkDataRef.current?.totalFrames || 0;
+       const prevSpan = Math.max(1, prevTotal - 1);
+       const nextTotal = landmarkData.totalFrames;
+       const nextSpan = Math.max(1, nextTotal - 1);
+
+       const scaleIdx = (idx: number) =>
+         prevTotal > 1 && nextTotal > 1 && prevTotal !== nextTotal
+           ? Math.max(0, Math.min(nextTotal - 1, Math.round((idx / prevSpan) * nextSpan)))
+           : Math.max(0, Math.min(nextTotal - 1, idx));
+
+       const nextStart = scaleIdx(startFrameRef.current);
+       const nextEnd = Math.max(nextStart + 1 <= nextTotal - 1 ? nextStart + 1 : nextStart, scaleIdx(endFrameRef.current));
+       const nextCurrent = scaleIdx(currentFrameRef.current);
+
+       landmarkDataRef.current = landmarkData;
+       cameraDataRef.current = null;
+       fpsRef.current = landmarkData.fps;
+       startFrameRef.current = nextStart;
+       endFrameRef.current = nextEnd;
+       currentFrameRef.current = nextCurrent;
+       loopRestartFrameRef.current = landmarkData.loopMode
+         ? (landmarkData.loopStartFrame ?? 0)
+         : null;
+
+       setMaxFrames(nextTotal);
+       setFps(landmarkData.fps);
+       setStartFrame(nextStart);
+       setEndFrame(nextEnd);
+       setCurrentFrame(nextCurrent);
+
+       if (isPlayingRef.current) {
+         startPlayback(nextCurrent);
+       } else {
+         renderFrame(nextCurrent);
+       }
+     },
+     [renderFrame, startPlayback]
+   );
 
   return {
     timeline,
@@ -323,6 +411,8 @@ export function useTimelinePlayback(
     resetTimeline,
     initAndPlay,
     updateTimelineData,
+    updateTimelineDataPreserveRange,
     initAndPlayCamera,
+    bindRootOffsetEvaluators,
   };
 }

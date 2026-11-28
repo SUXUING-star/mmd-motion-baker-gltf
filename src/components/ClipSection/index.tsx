@@ -4,12 +4,14 @@ import type { ExpressionTracksController } from '../../hooks/useExpressionTracks
 import type { MmdPipeline } from '../../hooks/useMmdPipeline';
 import type { I18nTexts } from '../../i18n';
 import {
-    ExpressionContextMenu,
-    ExpressionContextMenuState,
+  ExpressionContextMenu,
+  ExpressionContextMenuState,
 } from './ExpressionContextMenu';
 import { ExpressionControls } from './ExpressionControls';
 import { LoopInspectorBar } from './LoopInspectorBar';
+import { MotionSmoothBar } from './MotionSmoothBar';
 import { PrTimeline } from './PrTimeline';
+import { RootPostProcessBar } from './RootPostProcessBar';
 import { TransportBar } from './TransportBar';
 import { TrimRangeBar } from './TrimRangeBar';
 
@@ -20,9 +22,12 @@ interface ClipSectionProps {
 }
 
 export const ClipSection: React.FC<ClipSectionProps> = ({ t, pipeline, exprState }) => {
+  // 组件内解构
   const {
     timeline,
     loop,
+    rootPostProcess,
+    motionSmooth,
     availableMorphs,
     vmdExpressionTracks,
     getFrameVmdExpressions,
@@ -66,6 +71,21 @@ export const ClipSection: React.FC<ClipSectionProps> = ({ t, pipeline, exprState
         disabled={processing}
       />
       <TrimRangeBar t={t} timeline={timeline} disabled={processing} />
+      {!isCameraMode && (
+        <RootPostProcessBar
+          t={t}
+          rootPostProcess={rootPostProcess}
+          disabled={processing}
+        />
+      )}
+      {!isCameraMode && (
+        <MotionSmoothBar
+          t={t}
+          motionSmooth={motionSmooth}
+          disabled={processing}
+        />
+      )}
+
       {!isCameraMode && (
         <LoopInspectorBar
           t={t}

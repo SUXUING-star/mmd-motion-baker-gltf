@@ -4,11 +4,13 @@ import {
     evaluateExpressionTrackAtFrame,
     ExpressionTrack,
 } from '../../utils/expressionTrackEvaluator';
+import { offsetLandmarks } from '../../utils/rootPostProcess';
 
 export interface PreviewFrameParams {
   data: LandmarkData;
   frameIdx: number;
   expressionTracks: ExpressionTrack[];
+  rootOffsetMmd?: [number, number, number];
 }
 
 export interface PreviewFrameResult {
@@ -22,6 +24,7 @@ export function evaluatePreviewFrame({
   data,
   frameIdx,
   expressionTracks,
+  rootOffsetMmd,
 }: PreviewFrameParams): PreviewFrameResult | null {
   const targetFrame = data.frames[frameIdx];
   if (!targetFrame) return null;
@@ -35,9 +38,13 @@ export function evaluatePreviewFrame({
     }
   }
 
+  const landmarks = rootOffsetMmd
+    ? offsetLandmarks(targetFrame.landmarks, rootOffsetMmd[0], rootOffsetMmd[1], rootOffsetMmd[2])
+    : targetFrame.landmarks;
+
   return {
     time: targetFrame.previewTime ?? targetFrame.time,
-    landmarks: targetFrame.landmarks,
+    landmarks,
     blendTarget: targetFrame.previewBlendTarget,
     expressionsOverride,
   };

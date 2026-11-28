@@ -134,6 +134,37 @@ const zh = {
   statusReadyToExport: '烘焙完成，可随时导出',
   statusSolvingHumanoid: '正在导出文件...',
   statusError: (msg: string) => `解算失败: ${msg}`,
+  // 后处理坐标修正
+  rootPostTitle: '后处理坐标修正 (防遁地 / 原点归位)',
+  rootQuickFixBtn: '一键归位贴地',
+  rootResetBtn: '重置坐标',
+  rootCenterModeLabel: 'XZ 原点对齐',
+  rootCenterNone: '不对齐 (原始)',
+  rootCenterStart: '起点 XZ 归零',
+  rootCenterAverage: '全段重心归零',
+  rootAutoGroundLabel: '自动贴地 (修复负高度平面)',
+  rootClampFloorLabel: '逐帧防遁地钳位 (Y ≥ 0)',
+  rootOffsetXLabel: 'X 偏移 (左右 m)',
+  rootOffsetYLabel: 'Y 偏移 (高度 m)',
+  rootOffsetZLabel: 'Z 偏移 (前后 m)',
+  rootWarnSinking: '检测到负高度/遁地',
+  rootWarnFar: '检测到远离世界原点',
+  rootStatsSummary: (rawX: string, rawZ: string, rawY: string, adjX: string, adjZ: string, adjY: string) =>
+  `原始起点XZ (${rawX}, ${rawZ})m · 最低脚Y ${rawY}m  →  修正后XZ (${adjX}, ${adjZ})m · 最低脚Y ${adjY}m`,
+  // 平滑补帧后处理
+  smoothTitle: '平滑补帧 & 丢帧修复',
+  smoothQuickFixBtn: '一键平滑补帧 (60fps)',
+  smoothResetBtn: '还原原始帧',
+  smoothRepairDropLabel: '自动修复丢帧 / 卡顿冻结帧',
+  smoothFpsModeLabel: '补帧输出帧率',
+  smoothFpsRaw: (fps: number) => `保持原帧率 (${fps} fps)`,
+  smoothFps2x: (fps: number) => `2x 双倍补帧 (${fps * 2} fps)`,
+  smoothFps60: '目标 60 fps',
+  smoothFps120: '目标 120 fps',
+  smoothStrengthLabel: '动作平滑滤波强度',
+  smoothDropFoundBadge: (count: number) => `检测到 ${count} 个卡顿/丢帧`,
+  smoothStatsSummary: (rawFps: number, rawCount: number, outFps: number, outCount: number, dropped: number) =>
+    `原始 ${rawFps}fps (${rawCount} 帧, 疑似丢帧 ${dropped})  →  输出 ${outFps}fps (${outCount} 帧)`,
 };
 
 export type I18nTexts = typeof zh;
@@ -271,6 +302,37 @@ const en: I18nTexts = {
   statusReadyToExport: 'Bake complete, ready to export',
   statusSolvingHumanoid: 'Exporting...',
   statusError: (msg: string) => `Error: ${msg}`,
+  // Root Post-Process
+  rootPostTitle: 'Root Coordinate Post-Process (Ground & Origin)',
+  rootQuickFixBtn: 'Auto Center & Ground',
+  rootResetBtn: 'Reset',
+  rootCenterModeLabel: 'XZ Origin Align',
+  rootCenterNone: 'None (Raw)',
+  rootCenterStart: 'Snap Start XZ to 0',
+  rootCenterAverage: 'Center Mean XZ to 0',
+  rootAutoGroundLabel: 'Auto Ground (Fix Negative Plane)',
+  rootClampFloorLabel: 'Clamp Floor Per Frame (Y ≥ 0)',
+  rootOffsetXLabel: 'X Offset (L/R m)',
+  rootOffsetYLabel: 'Y Offset (Height m)',
+  rootOffsetZLabel: 'Z Offset (F/B m)',
+  rootWarnSinking: 'Foot sinking / negative floor detected',
+  rootWarnFar: 'Far from world origin',
+  rootStatsSummary: (rawX: string, rawZ: string, rawY: string, adjX: string, adjZ: string, adjY: string) =>
+    `Raw Start XZ (${rawX}, ${rawZ})m · Min Foot Y ${rawY}m  →  Adjusted XZ (${adjX}, ${adjZ})m · Min Y ${adjY}m`,
+  // Motion Smoothing & Interpolation
+  smoothTitle: 'Motion Smoothing & Frame Interpolation',
+  smoothQuickFixBtn: 'Auto Smooth (60fps)',
+  smoothResetBtn: 'Restore Raw',
+  smoothRepairDropLabel: 'Auto-Repair Dropped / Frozen Frames',
+  smoothFpsModeLabel: 'Target FPS',
+  smoothFpsRaw: (fps: number) => `Original (${fps} fps)`,
+  smoothFps2x: (fps: number) => `2x Upsample (${fps * 2} fps)`,
+  smoothFps60: '60 fps',
+  smoothFps120: '120 fps',
+  smoothStrengthLabel: 'Smoothing Strength',
+  smoothDropFoundBadge: (count: number) => `${count} dropped/frozen frames detected`,
+  smoothStatsSummary: (rawFps: number, rawCount: number, outFps: number, outCount: number, dropped: number) =>
+    `Raw ${rawFps}fps (${rawCount}f, ${dropped} dropped)  →  Output ${outFps}fps (${outCount}f)`,
 };
 
 const ja: I18nTexts = {
@@ -406,6 +468,37 @@ const ja: I18nTexts = {
   statusReadyToExport: 'ベイク完了、出力可能',
   statusSolvingHumanoid: '出力中...',
   statusError: (msg: string) => `エラー: ${msg}`,
+  // ルート座標後処理
+    rootPostTitle: 'ルート座標後処理 (接地・原点補正)',
+    rootQuickFixBtn: 'ワンクリック原点＆接地',
+    rootResetBtn: 'リセット',
+    rootCenterModeLabel: 'XZ 原点補正',
+    rootCenterNone: 'なし (元データ)',
+    rootCenterStart: '開始フレーム XZ を 0 へ',
+    rootCenterAverage: '全体重心を 0 へ',
+    rootAutoGroundLabel: '自動接地 (負の高さ平面を修正)',
+    rootClampFloorLabel: '毎フレーム接地クランプ (Y ≥ 0)',
+    rootOffsetXLabel: 'X オフセット (左右 m)',
+    rootOffsetYLabel: 'Y オフセット (高さ m)',
+    rootOffsetZLabel: 'Z オフセット (前後 m)',
+    rootWarnSinking: '足元の埋まり/負の平面を検出',
+    rootWarnFar: '原点から大きく離れています',
+    rootStatsSummary: (rawX: string, rawZ: string, rawY: string, adjX: string, adjZ: string, adjY: string) =>
+      `元開始XZ (${rawX}, ${rawZ})m · 最低足Y ${rawY}m  →  補正後XZ (${adjX}, ${adjZ})m · 最低Y ${adjY}m`,
+    // スムージング＆フレーム補間
+    smoothTitle: 'スムージング & フレーム補間',
+    smoothQuickFixBtn: 'ワンクリック補間 (60fps)',
+    smoothResetBtn: '元に戻す',
+    smoothRepairDropLabel: 'フレーム落ち・停止コマを自動修復',
+    smoothFpsModeLabel: '出力フレームレート',
+    smoothFpsRaw: (fps: number) => `元のまま (${fps} fps)`,
+    smoothFps2x: (fps: number) => `2倍補間 (${fps * 2} fps)`,
+    smoothFps60: '60 fps',
+    smoothFps120: '120 fps',
+    smoothStrengthLabel: '平滑化フィルタ強度',
+    smoothDropFoundBadge: (count: number) => `停止・欠落コマ ${count} 箇所を検出`,
+    smoothStatsSummary: (rawFps: number, rawCount: number, outFps: number, outCount: number, dropped: number) =>
+      `元データ ${rawFps}fps (${rawCount}F, 欠落 ${dropped})  →  出力 ${outFps}fps (${outCount}F)`,
 };
 
 export const I18N: Record<Lang, I18nTexts> = {
